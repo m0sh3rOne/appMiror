@@ -150,6 +150,11 @@ fn code_to_vk(code: &str) -> Option<u16> {
         "Delete" => VK_DELETE.0,
         "Home" => VK_HOME.0,
         "End" => VK_END.0,
+        "NumpadMultiply" | "Asterisk" => VK_MULTIPLY.0,
+        "NumpadAdd" | "Plus" => VK_ADD.0,
+        "NumpadSubtract" | "Minus" => VK_SUBTRACT.0,
+        "NumpadDivide" | "Slash" => VK_DIVIDE.0,
+        "Equal" => VK_OEM_PLUS.0,
         _ => return None,
     };
     Some(vk)
@@ -371,3 +376,108 @@ pub fn key_bg(hwnd: isize, code: &str, pressed: bool) {
     // best-effort et généralement non rendus en arrière-plan.
     post(target, msg, vk as usize, LPARAM(lparam as isize));
 }
+
+struct ChildWindowInfo {
+    class_name: String,
+    text: String,
+    rect: RECT,
+}
+
+unsafe extern "system" fn enum_child_callback(hwnd: HWND, lparam: LPARAM) -> windows::Win32::Foundation::BOOL {
+    use windows::Win32::UI::WindowsAndMessaging::{IsWindowVisible, GetClassNameW, GetWindowTextW, GetWindowRect};
+    use windows::Win32::Foundation::BOOL;
+
+    if !IsWindowVisible(hwnd).as_bool() {
+        return BOOL(1);
+    }
+
+    let list = &mut *(lparam.0 as *mut Vec<ChildWindowInfo>);
+    
+    let mut class_buf = [0u16; 256];
+    let len = GetClassNameW(hwnd, &mut class_buf);
+    let class_name = if len > 0 {
+        String::from_utf16_lossy(&class_buf[..len as usize])
+    } else {
+        String::new()
+    };
+
+    let mut text_buf = [0u16; 512];
+    let len = GetWindowTextW(hwnd, &mut text_buf);
+    let text = if len > 0 {
+        String::from_utf16_lossy(&text_buf[..len as usize])
+    } else {
+        String::new()
+    };
+
+    let mut rect = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut rect);
+
+    list.push(ChildWindowInfo {
+        class_name,
+        text,
+        rect,
+    });
+
+    BOOL(1)
+}
+
+pub fn inspect_ui_elements(hwnd: isize) -> Result<serde_json::Value, String> {
+    use windows::Win32::UI::WindowsAndMessaging::EnumChildWindows;
+    use serde_json::json;
+
+    let parent_hwnd = as_hwnd(hwnd);
+    let (parent_w, parent_h) = client_size(hwnd).ok_or_else(|| "fenêtre introuvable".to_string())?;
+
+    let mut children = Vec::<ChildWindowInfo>::new();
+    unsafe {
+        let lparam = LPARAM(&mut children as *mut _ as isize);
+        let _ = EnumChildWindows(parent_hwnd, Some(enum_child_callback), lparam);
+    }
+
+    let mut elements = Vec::new();
+    for child in children {
+        let mut pt_top_left = POINT { x: child.rect.left, y: child.rect.top };
+        let mut pt_bottom_right = POINT { x: child.rect.right, y: child.rect.bottom };
+        unsafe {
+            let _ = ScreenToClient(parent_hwnd, &mut pt_top_left);
+            let _ = ScreenToClient(parent_hwnd, &mut pt_bottom_right);
+        }
+
+        let left = pt_top_left.x;
+        let top = pt_top_left.y;
+        let right = pt_bottom_right.x;
+        let bottom = pt_bottom_right.y;
+
+        let w = right - left;
+        let h = bottom - top;
+
+        if w <= 0 || h <= 0 {
+            continue;
+        }
+
+        let cx = left + w / 2;
+        let cy = top + h / 2;
+
+        let x_norm = cx as f64 / parent_w.max(1) as f64;
+        let y_norm = cy as f64 / parent_h.max(1) as f64;
+        let w_norm = w as f64 / parent_w.max(1) as f64;
+        let h_norm = h as f64 / parent_h.max(1) as f64;
+
+        let x_norm = (x_norm * 1000.0).round() / 1000.0;
+        let y_norm = (y_norm * 1000.0).round() / 1000.0;
+        let w_norm = (w_norm * 1000.0).round() / 1000.0;
+        let h_norm = (h_norm * 1000.0).round() / 1000.0;
+
+        elements.push(json!({
+            "class": child.class_name,
+            "text": child.text,
+            "x": x_norm,
+            "y": y_norm,
+            "width": w_norm,
+            "height": h_norm
+        }));
+    }
+
+    Ok(json!(elements))
+}
+

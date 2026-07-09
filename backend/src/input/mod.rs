@@ -111,3 +111,16 @@ pub fn key_bg(hwnd: isize, code: &str, pressed: bool) {
     #[cfg(not(any(windows, target_os = "linux")))]
     let _ = (hwnd, code, pressed);
 }
+
+pub fn inspect_ui_elements(hwnd: isize) -> Result<serde_json::Value, String> {
+    #[cfg(windows)]
+    {
+        imp::inspect_ui_elements(hwnd)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = hwnd;
+        Ok(serde_json::json!([]))
+    }
+}
+

@@ -123,6 +123,11 @@ fn tool_definitions() -> Value {
                 "required": ["command"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "inspect_ui_elements",
+            "description": "Examine la hiérarchie des boutons, champs de saisie et labels de la fenêtre actuellement attachée.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }
     ])
 }
@@ -140,6 +145,7 @@ async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> 
         "inject_input" => tool_inject(args, state).map(|t| json!([ { "type": "text", "text": t } ])),
         "get_window_screenshot" => tool_screenshot(state).await.map(|b64| json!([ { "type": "image", "data": b64, "mimeType": "image/jpeg" } ])),
         "launch_app" => tool_launch(args).map(|t| json!([ { "type": "text", "text": t } ])),
+        "inspect_ui_elements" => tool_inspect(state).map(|v| json!([ { "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() } ])),
         other => return Err(McpError { code: -32602, message: format!("outil inconnu: {other}") }),
     };
 
@@ -434,4 +440,13 @@ fn tool_launch(args: Value) -> Result<String, String> {
         Err(e) => Err(format!("impossible de lancer l'application: {e}")),
     }
 }
+
+fn tool_inspect(state: &AppState) -> Result<serde_json::Value, String> {
+    let target = *state.attached.lock().unwrap();
+    let Some(target) = target else {
+        return Err("aucune fenêtre attachée (appeler attach_to_window d'abord)".into());
+    };
+    input::inspect_ui_elements(target.id)
+}
+
 

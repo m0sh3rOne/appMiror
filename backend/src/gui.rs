@@ -151,6 +151,8 @@ impl GuiApp {
 
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.set_visuals(egui::Visuals::light());
+
         if !self.launcher_unlocked {
             // Draw Launcher Unlock Screen
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -200,9 +202,9 @@ impl eframe::App for GuiApp {
                 ui.label("Server Status:");
                 let is_running = self.server_shutdown.is_some();
                 if is_running {
-                    ui.colored_label(egui::Color32::from_rgb(46, 204, 113), "● Running");
+                    ui.colored_label(egui::Color32::from_rgb(39, 174, 96), "● Running");
                 } else {
-                    ui.colored_label(egui::Color32::from_rgb(231, 76, 60), "○ Stopped");
+                    ui.colored_label(egui::Color32::from_rgb(192, 57, 43), "○ Stopped");
                 }
             });
 
@@ -211,11 +213,21 @@ impl eframe::App for GuiApp {
             // Server actions
             ui.horizontal(|ui| {
                 if self.server_shutdown.is_none() {
-                    if ui.button("▶ Start Server").clicked() {
+                    let start_btn = egui::Button::new(
+                        egui::RichText::new("▶ Start Server")
+                            .color(egui::Color32::WHITE)
+                            .strong()
+                    ).fill(egui::Color32::from_rgb(46, 204, 113)); // Green
+                    if ui.add(start_btn).clicked() {
                         self.start_server();
                     }
                 } else {
-                    if ui.button("⏹ Stop Server").clicked() {
+                    let stop_btn = egui::Button::new(
+                        egui::RichText::new("⏹ Stop Server")
+                            .color(egui::Color32::WHITE)
+                            .strong()
+                    ).fill(egui::Color32::from_rgb(231, 76, 60)); // Red
+                    if ui.add(stop_btn).clicked() {
                         self.stop_server();
                     }
                 }
@@ -235,17 +247,34 @@ impl eframe::App for GuiApp {
             let port = self.config.lock().unwrap().server_port;
             ui.group(|ui| {
                 ui.heading("Connection Info");
+                ui.add_space(5.0);
+
                 ui.horizontal(|ui| {
-                    ui.label("Localhost Address:");
-                    ui.code(format!("http://localhost:{}", port));
+                    ui.label(egui::RichText::new("Localhost Address:").strong());
+                    let addr = format!("http://localhost:{}", port);
+                    ui.code(&addr);
+                    if ui.small_button("📋").clicked() {
+                        ctx.output_mut(|o| o.copied_text = addr);
+                        self.status_message = "Localhost address copied!".to_string();
+                    }
                 });
                 ui.horizontal(|ui| {
-                    ui.label("LAN Address (for tablets/phones):");
-                    ui.code(format!("http://{}:{}", self.local_ip, port));
+                    ui.label(egui::RichText::new("LAN Address (for tablets/phones):").strong());
+                    let addr = format!("http://{}:{}", self.local_ip, port);
+                    ui.code(&addr);
+                    if ui.small_button("📋").clicked() {
+                        ctx.output_mut(|o| o.copied_text = addr);
+                        self.status_message = "LAN address copied!".to_string();
+                    }
                 });
                 ui.horizontal(|ui| {
-                    ui.label("MCP Server Address:");
-                    ui.code(format!("http://localhost:{}/api/mcp/sse", port));
+                    ui.label(egui::RichText::new("MCP Server Address:").strong());
+                    let addr = format!("http://localhost:{}/api/mcp/sse", port);
+                    ui.code(&addr);
+                    if ui.small_button("📋").clicked() {
+                        ctx.output_mut(|o| o.copied_text = addr);
+                        self.status_message = "MCP Server address copied!".to_string();
+                    }
                 });
             });
 
@@ -335,9 +364,21 @@ impl eframe::App for GuiApp {
 
                         ui.add_space(10.0);
                         ui.heading("MCP Server Integration (for AI tools):");
-                        ui.label("- appMirror includes an MCP (Model Context Protocol) server.");
-                        ui.label("- You can connect AI agents (e.g. Claude Desktop, Cursor) to appMirror using the MCP Server Address displayed in the Connection Info section.");
-                        ui.label("- The AI can list windows, attach to a window, and inject keyboard/mouse inputs natively.");
+                        ui.label("- appMirror includes a built-in MCP (Model Context Protocol) server.");
+                        ui.label("- Connect AI agents (e.g. Claude Desktop, Cursor) using the address in the Connection Info section.");
+                        ui.add_space(5.0);
+                        ui.heading("Available Tools:");
+                        ui.label("  • list_windows: Scan open desktop windows.");
+                        ui.label("  • attach_to_window: Target a window by ID & bring it to foreground.");
+                        ui.label("  • inject_input: Simulate keyboard (keys/text) & mouse (clicks/moves/wheel) actions.");
+                        ui.label("  • get_window_screenshot: Capture real-time base64 JPEG screen feedback.");
+                        ui.label("  • inspect_ui_elements: List child window controls with text & normalized coordinates.");
+                        ui.add_space(5.0);
+                        ui.heading("AI Developer Tips:");
+                        ui.label("  • AZERTY keyboards: Digits require holding down ShiftLeft.");
+                        ui.label("  • UWP/DirectX Apps: These use custom drawing (no child HWNDs). Use get_window_screenshot for visual coordinate mapping.");
+                        ui.label("  • Coordinates: Center points are normalized (x,y) ∈ [0,1] relative to the target client area.");
+                        ui.add_space(5.0);
                         ui.label("- To configure Antigravity IDE, add this to your mcp_config.json:");
                         ui.add_space(2.0);
                         ui.label("  \"mcpServers\": {\n    \"app-mirror\": {\n      \"serverUrl\": \"http://127.0.0.1:8080/api/mcp/sse\"\n    }\n  }");

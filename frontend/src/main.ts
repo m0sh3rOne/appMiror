@@ -25,6 +25,7 @@ const pinError = document.getElementById("pinError") as HTMLDivElement;
 const qualitySelect = document.getElementById("qualitySelect") as HTMLSelectElement;
 const showCursorInput = document.getElementById("showCursor") as HTMLInputElement;
 const bgInput = document.getElementById("bgInput") as HTMLInputElement;
+const virtualCursor = document.getElementById("virtualCursor") as HTMLDivElement;
 
 let pendingWindowId: number | null = null;
 // Dernière sélection (pour re-streamer quand une option de capture change).
@@ -270,6 +271,7 @@ function setTool(t: Tool) {
   for (const b of toolButtons) b.classList.toggle("active", b.dataset.tool === t);
   if (t === "cursor") canvas.focus();
   else canvas.blur();
+  updateVirtualCursor();
 }
 
 for (const b of toolButtons) {
@@ -333,12 +335,42 @@ connectBtn.addEventListener("click", () => {
   }
 });
 
+let lastMouseEvent: MouseEvent | null = null;
+
+function updateVirtualCursor(e?: MouseEvent) {
+  if (e) {
+    lastMouseEvent = e;
+  }
+  const isCursorHidden = !showCursorInput.checked;
+  const isBgInput = bgInput.checked;
+  const isCursorTool = annot.activeTool() === "cursor";
+  const shouldShow = (isCursorHidden || isBgInput) && isCursorTool;
+
+  if (shouldShow && lastMouseEvent) {
+    const rect = stage.getBoundingClientRect();
+    const x = lastMouseEvent.clientX - rect.left;
+    const y = lastMouseEvent.clientY - rect.top;
+    virtualCursor.style.left = `${x}px`;
+    virtualCursor.style.top = `${y}px`;
+    virtualCursor.style.display = "block";
+  } else {
+    virtualCursor.style.display = "none";
+  }
+}
+
+stage.addEventListener("mousemove", (e) => updateVirtualCursor(e));
+stage.addEventListener("mouseenter", (e) => updateVirtualCursor(e));
+stage.addEventListener("mouseleave", () => {
+  virtualCursor.style.display = "none";
+});
+
 // Curseur distant : bascule à chaud (l'option WGC est fixée au démarrage de la
 // capture, donc on relance le stream de la fenêtre courante avec le nouveau réglage).
 showCursorInput.addEventListener("change", () => {
   if (lastSelectedId !== null) {
     sendSelect(lastSelectedId, lastPin);
   }
+  updateVirtualCursor();
 });
 
 // Contrôle en arrière-plan : injection via PostMessage sans voler le focus hôte.
@@ -347,6 +379,7 @@ bgInput.addEventListener("change", () => {
   statusEl.textContent = bgInput.checked
     ? "background injection (host focus preserved)"
     : "foreground injection (SendInput)";
+  updateVirtualCursor();
 });
 
 shotBtn.addEventListener("click", () =>
