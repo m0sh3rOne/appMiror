@@ -13,7 +13,12 @@ pub enum ClientMessage {
     /// Demande la liste des fenêtres capturables.
     ListWindows,
     /// Sélectionne la fenêtre à streamer (HWND transporté en `isize`).
-    SelectWindow { id: isize, pin: Option<String> },
+    SelectWindow {
+        id: isize,
+        pin: Option<String>,
+        quality: Option<u8>,
+        scale: Option<f32>,
+    },
     /// Déplacement souris, coords natives (px client).
     MouseMove { x: i32, y: i32 },
     /// Bouton souris pressé/relâché.

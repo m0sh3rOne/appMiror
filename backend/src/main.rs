@@ -41,7 +41,7 @@ fn main() -> anyhow::Result<()> {
 
             let app = Router::new()
                 .route("/ws", get(server::ws_handler))
-                .route("/api/mcp/sse", get(mcp::transport::sse_handler))
+                .route("/api/mcp/sse", get(mcp::transport::sse_handler).post(mcp::transport::message_handler))
                 .route("/api/mcp/message", post(mcp::transport::message_handler))
                 .fallback(gui::static_handler)
                 .layer(CorsLayer::permissive())

@@ -118,7 +118,7 @@ impl GuiApp {
             rt.block_on(async {
                 let app = axum::Router::new()
                     .route("/ws", axum::routing::get(crate::server::ws_handler))
-                    .route("/api/mcp/sse", axum::routing::get(crate::mcp::transport::sse_handler))
+                    .route("/api/mcp/sse", axum::routing::get(crate::mcp::transport::sse_handler).post(crate::mcp::transport::message_handler))
                     .route("/api/mcp/message", axum::routing::post(crate::mcp::transport::message_handler))
                     .fallback(static_handler)
                     .layer(tower_http::cors::CorsLayer::permissive())

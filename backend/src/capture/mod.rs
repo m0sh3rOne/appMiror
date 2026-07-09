@@ -54,18 +54,19 @@ pub fn list_windows(locked_apps: &[String]) -> anyhow::Result<Vec<WindowInfo>> {
 pub fn start(
     hwnd: isize,
     quality: u8,
+    scale: f32,
 ) -> anyhow::Result<(CaptureSession, watch::Receiver<Vec<u8>>)> {
     #[cfg(windows)]
     {
-        self::windows::start(hwnd, quality)
+        self::windows::start(hwnd, quality, scale)
     }
     #[cfg(target_os = "linux")]
     {
-        self::linux::start(hwnd, quality)
+        self::linux::start(hwnd, quality, scale)
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
-        let _ = (hwnd, quality);
+        let _ = (hwnd, quality, scale);
         anyhow::bail!("capture non implémentée sur cette plateforme")
     }
 }

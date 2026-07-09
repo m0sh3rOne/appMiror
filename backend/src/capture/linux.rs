@@ -117,9 +117,31 @@ pub fn list_windows(locked_apps: &[String]) -> anyhow::Result<Vec<WindowInfo>> {
     Ok(out)
 }
 
+fn downscale_rgb(rgb: &[u8], w: u32, h: u32, scale: f32) -> (Vec<u8>, u32, u32) {
+    if scale >= 0.99 {
+        return (rgb.to_vec(), w, h);
+    }
+    let new_w = ((w as f32 * scale) as u32).max(1);
+    let new_h = ((h as f32 * scale) as u32).max(1);
+    let mut out = Vec::with_capacity((new_w * new_h * 3) as usize);
+    for y in 0..new_h {
+        let src_y = (((y as f32 / scale) as u32)).min(h - 1);
+        let src_row_offset = (src_y * w * 3) as usize;
+        for x in 0..new_w {
+            let src_x = (((x as f32 / scale) as u32)).min(w - 1);
+            let src_pixel_offset = src_row_offset + (src_x * 3) as usize;
+            out.push(rgb[src_pixel_offset]);
+            out.push(rgb[src_pixel_offset + 1]);
+            out.push(rgb[src_pixel_offset + 2]);
+        }
+    }
+    (out, new_w, new_h)
+}
+
 pub fn start(
     hwnd: isize,
     quality: u8,
+    scale: f32,
 ) -> anyhow::Result<(CaptureSession, watch::Receiver<Vec<u8>>)> {
     let win = hwnd as Window;
     let (tx, rx) = watch::channel(Vec::new());
@@ -135,7 +157,7 @@ pub fn start(
     let stop_thread = stop.clone();
 
     let thread = std::thread::spawn(move || {
-        capture_loop(conn, win, quality, tx, stop_thread);
+        capture_loop(conn, win, quality, scale, tx, stop_thread);
     });
 
     Ok((
@@ -151,11 +173,12 @@ fn capture_loop(
     conn: RustConnection,
     win: Window,
     quality: u8,
+    scale: f32,
     tx: watch::Sender<Vec<u8>>,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::Relaxed) {
-        match grab_frame(&conn, win, quality) {
+        match grab_frame(&conn, win, quality, scale) {
             Ok(jpeg) => {
                 // Plus de receiver => la session est terminée côté serveur.
                 if tx.send(jpeg).is_err() {
@@ -172,7 +195,7 @@ fn capture_loop(
     tracing::info!("capture X11 terminée");
 }
 
-fn grab_frame(conn: &RustConnection, win: Window, quality: u8) -> anyhow::Result<Vec<u8>> {
+fn grab_frame(conn: &RustConnection, win: Window, quality: u8, scale: f32) -> anyhow::Result<Vec<u8>> {
     let geo = conn.get_geometry(win)?.reply()?;
     let img = conn
         .get_image(ImageFormat::Z_PIXMAP, win, 0, 0, geo.width, geo.height, !0)?
@@ -193,9 +216,15 @@ fn grab_frame(conn: &RustConnection, win: Window, quality: u8) -> anyhow::Result
         rgb.push(px[0]);
     }
 
+    let (scaled_rgb, final_w, final_h) = if scale < 0.99 {
+        downscale_rgb(&rgb, w, h, scale)
+    } else {
+        (rgb, w, h)
+    };
+
     let mut jpeg = Vec::new();
     JpegEncoder::new_with_quality(&mut jpeg, quality)
-        .encode(&rgb, w, h, ExtendedColorType::Rgb8)?;
+        .encode(&scaled_rgb, final_w, final_h, ExtendedColorType::Rgb8)?;
     Ok(jpeg)
 }
 

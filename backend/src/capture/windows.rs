@@ -86,9 +86,32 @@ pub fn list_windows(locked_apps: &[String]) -> anyhow::Result<Vec<WindowInfo>> {
     Ok(out)
 }
 
+fn downscale_rgba(rgba: &[u8], w: u32, h: u32, scale: f32) -> (Vec<u8>, u32, u32) {
+    if scale >= 0.99 {
+        return (rgba.to_vec(), w, h);
+    }
+    let new_w = ((w as f32 * scale) as u32).max(1);
+    let new_h = ((h as f32 * scale) as u32).max(1);
+    let mut out = Vec::with_capacity((new_w * new_h * 4) as usize);
+    for y in 0..new_h {
+        let src_y = (((y as f32 / scale) as u32)).min(h - 1);
+        let src_row_offset = (src_y * w * 4) as usize;
+        for x in 0..new_w {
+            let src_x = (((x as f32 / scale) as u32)).min(w - 1);
+            let src_pixel_offset = src_row_offset + (src_x * 4) as usize;
+            out.push(rgba[src_pixel_offset]);
+            out.push(rgba[src_pixel_offset + 1]);
+            out.push(rgba[src_pixel_offset + 2]);
+            out.push(rgba[src_pixel_offset + 3]);
+        }
+    }
+    (out, new_w, new_h)
+}
+
 pub fn start(
     hwnd: isize,
     quality: u8,
+    scale: f32,
 ) -> anyhow::Result<(CaptureSession, watch::Receiver<Vec<u8>>)> {
     let window = Window::from_raw_hwnd(hwnd as *mut core::ffi::c_void);
     let (tx, rx) = watch::channel(Vec::new());
@@ -101,7 +124,7 @@ pub fn start(
         MinimumUpdateIntervalSettings::Default,
         DirtyRegionSettings::Default,
         ColorFormat::Rgba8,
-        FrameSink { tx, quality },
+        FrameSink { tx, quality, scale },
     );
 
     let control = CaptureHandler::start_free_threaded(settings)
@@ -114,6 +137,7 @@ pub fn start(
 pub struct FrameSink {
     tx: watch::Sender<Vec<u8>>,
     quality: u8,
+    scale: f32,
 }
 
 pub struct CaptureHandler {
@@ -139,9 +163,15 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         // Buffer RGBA sans padding de ligne.
         let rgba = buffer.as_nopadding_buffer()?;
 
+        let (scaled_rgba, w, h) = if self.sink.scale < 0.99 {
+            downscale_rgba(rgba, width, height, self.sink.scale)
+        } else {
+            (rgba.to_vec(), width, height)
+        };
+
         // Strip alpha -> RGB (JPEG n'a pas d'alpha).
-        let mut rgb = Vec::with_capacity((width * height * 3) as usize);
-        for px in rgba.chunks_exact(4) {
+        let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+        for px in scaled_rgba.chunks_exact(4) {
             rgb.push(px[0]);
             rgb.push(px[1]);
             rgb.push(px[2]);
@@ -149,7 +179,7 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
 
         let mut jpeg = Vec::new();
         JpegEncoder::new_with_quality(&mut jpeg, self.sink.quality)
-            .encode(&rgb, width, height, ExtendedColorType::Rgb8)?;
+            .encode(&rgb, w, h, ExtendedColorType::Rgb8)?;
 
         // Écrase la frame précédente ; ignore l'erreur si plus de receiver.
         let _ = self.sink.tx.send(jpeg);

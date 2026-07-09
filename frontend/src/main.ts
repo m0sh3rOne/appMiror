@@ -22,8 +22,10 @@ const pinInput = document.getElementById("pinInput") as HTMLInputElement;
 const pinSubmit = document.getElementById("pinSubmit") as HTMLButtonElement;
 const pinCancel = document.getElementById("pinCancel") as HTMLButtonElement;
 const pinError = document.getElementById("pinError") as HTMLDivElement;
+const qualitySelect = document.getElementById("qualitySelect") as HTMLSelectElement;
 
 let pendingWindowId: number | null = null;
+let nativeW = 1280;
 
 function showPinModal(windowId: number) {
   pendingWindowId = windowId;
@@ -38,6 +40,17 @@ function hidePinModal() {
   pinModal.style.display = "none";
 }
 
+function getQualitySettings(): { quality: number; scale: number } {
+  const val = qualitySelect.value;
+  if (val === "high") {
+    return { quality: 75, scale: 1.0 };
+  } else if (val === "low") {
+    return { quality: 45, scale: 0.5 };
+  } else {
+    return { quality: 60, scale: 0.7 };
+  }
+}
+
 function submitPin() {
   const pin = pinInput.value;
   if (!pin) {
@@ -45,7 +58,8 @@ function submitPin() {
     return;
   }
   if (pendingWindowId !== null) {
-    stream.send({ type: "select_window", id: pendingWindowId, pin });
+    const { quality, scale } = getQualitySettings();
+    stream.send({ type: "select_window", id: pendingWindowId, pin, quality, scale });
   }
 }
 
@@ -107,7 +121,11 @@ function layout() {
   const scale = Math.min(availW / nw, availH / nh, 1);
   stage.style.width = `${Math.max(1, Math.round(nw * scale))}px`;
   stage.style.height = `${Math.max(1, Math.round(nh * scale))}px`;
-  annot.layoutChanged(scale);
+  
+  // Calculate display scale relative to the native resolution!
+  const cssWidth = Math.max(1, Math.round(nw * scale));
+  const displayToNativeScale = cssWidth / (nativeW || 1);
+  annot.layoutChanged(displayToNativeScale);
 }
 new ResizeObserver(layout).observe(viewport);
 
@@ -115,9 +133,7 @@ const stream = new StreamClient(canvas, {
   onStatus: (s) => (statusEl.textContent = s),
   // La taille des frames fait foi (la fenêtre distante peut être
   // redimensionnée en cours de stream, sans nouveau message "selected").
-  onFrameSize: (w, h) => {
-    input.setNativeSize(w, h);
-    annot.setNativeSize(w, h);
+  onFrameSize: () => {
     layout();
   },
   onServerMessage: (msg: ServerMessage) => {
@@ -134,6 +150,7 @@ const stream = new StreamClient(canvas, {
         break;
       case "selected":
         hidePinModal();
+        nativeW = msg.width;
         input.setNativeSize(msg.width, msg.height);
         annot.setNativeSize(msg.width, msg.height);
         statusEl.textContent = `streaming ${msg.width}×${msg.height}`;
@@ -253,7 +270,8 @@ connectBtn.addEventListener("click", () => {
   if (isLocked) {
     showPinModal(id);
   } else {
-    stream.send({ type: "select_window", id });
+    const { quality, scale } = getQualitySettings();
+    stream.send({ type: "select_window", id, quality, scale });
   }
 });
 

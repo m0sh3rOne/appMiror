@@ -105,7 +105,7 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
             }
         }
 
-        ClientMessage::SelectWindow { id, pin } => {
+        ClientMessage::SelectWindow { id, pin, quality, scale } => {
             let is_locked = {
                 let cfg_opt = state.config.lock().unwrap();
                 if let Some(cfg_mutex) = &*cfg_opt {
@@ -130,7 +130,9 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
             let (w, h) = input::client_size(id).unwrap_or((0, 0));
             session.hwnd = Some(id);
 
-            match capture::start(id, 70) {
+            let q = quality.unwrap_or(70);
+            let s = scale.unwrap_or(1.0);
+            match capture::start(id, q, s) {
                 Ok((control, mut rx)) => {
                     session.capture = Some(control);
                     session.frames = Some(rx.clone());
