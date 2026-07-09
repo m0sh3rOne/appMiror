@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>appMirror — déport d'affichage</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #14161a;
+        color: #e6e6e6;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      header {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+        padding: 0.6rem 1rem;
+        background: #1d2026;
+        border-bottom: 1px solid #2a2e36;
+      }
+      select { min-width: 320px; padding: 0.3rem; background:#0f1114; color:#e6e6e6; border:1px solid #333; border-radius:4px;}
+      input[type="text"] { flex: 1; min-width: 180px; padding: 0.35rem 0.5rem; background:#0f1114; color:#e6e6e6; border:1px solid #333; border-radius:4px; }
+      button.recording { background:#7a2626; border-color:#a33; }
+      button.recording:hover { background:#8d2e2e; }
+      button { padding: 0.35rem 0.8rem; cursor: pointer; border-radius:4px; border:1px solid #3a3f49; background:#2a2f38; color:#e6e6e6;}
+      button:hover { background:#343a45; }
+      #status { margin-left: auto; font-size: 0.85rem; opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+      /* ── Barre d'outils d'annotation ─────────────────────────────────── */
+      #toolbar {
+        display: flex;
+        gap: 0.35rem;
+        align-items: center;
+        padding: 0.4rem 1rem;
+        background: #191c21;
+        border-bottom: 1px solid #2a2e36;
+        flex-wrap: wrap;
+      }
+      #toolbar .tool {
+        min-width: 2.2rem;
+        padding: 0.3rem 0.45rem;
+        font-size: 0.95rem;
+        line-height: 1;
+      }
+      #toolbar .tool.active { background: #2f6fb3; border-color: #4a8fd6; }
+      #toolbar .sep { width: 1px; align-self: stretch; margin: 0 0.3rem; background: #2a2e36; }
+      #toolbar label { display: flex; align-items: center; gap: 0.3rem; font-size: 0.8rem; opacity: 0.9; }
+      #toolbar input[type="color"] {
+        width: 2rem; height: 1.7rem; padding: 0;
+        border: 1px solid #3a3f49; border-radius: 4px; background: #2a2f38; cursor: pointer;
+      }
+      #toolbar input[type="range"] { width: 90px; }
+
+      /* ── Scène : canvas vidéo + overlay d'annotation + règles ────────── */
+      main { flex: 1; display: grid; place-items: center; overflow: hidden; padding: 0.75rem; min-height: 0; }
+      /* #stage est dimensionné en px par main.ts (ajustement letterbox) ;
+         canvas et SVG le remplissent exactement, donc l'overlay est toujours
+         aligné pixel à pixel sur la vidéo. */
+      #stage {
+        position: relative;
+        background: #000;
+        border: 1px solid #2a2e36;
+        user-select: none;
+      }
+      #screen, #overlay {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      #screen { outline: none; }
+      #overlay { pointer-events: none; } /* activé par l'Annotator hors mode contrôle */
+
+      /* Curseur selon l'outil actif (posé par main.ts sur data-tool). */
+      #stage[data-tool="cursor"] { cursor: none; }
+      #stage[data-tool="select"] { cursor: default; }
+      #stage[data-tool="text"] { cursor: text; }
+      #stage[data-tool="rect"], #stage[data-tool="ellipse"], #stage[data-tool="line"],
+      #stage[data-tool="arrow"], #stage[data-tool="pen"], #stage[data-tool="marker"],
+      #stage[data-tool="ruler"], #stage[data-tool="slice"] { cursor: crosshair; }
+
+      .ruler {
+        position: absolute;
+        display: none;
+        z-index: 3;
+        touch-action: none;
+      }
+      #rulerTop { top: 0; left: 0; width: 100%; height: 22px; cursor: s-resize; }
+      #rulerLeft { top: 0; left: 0; width: 22px; height: 100%; cursor: e-resize; }
+      #coordChip {
+        position: absolute;
+        top: 26px;
+        left: 26px;
+        display: none;
+        z-index: 4;
+        padding: 2px 6px;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        color: #4dd2ff;
+        background: rgba(17, 19, 24, 0.85);
+        border: 1px solid #2a2e36;
+        border-radius: 3px;
+        pointer-events: none;
+      }
+
+      /* Éditeur de texte flottant de l'outil Texte. */
+      .text-editor {
+        position: absolute;
+        z-index: 5;
+        min-width: 40px;
+        padding: 1px 2px;
+        margin: 0;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px dashed #888;
+        outline: none;
+        resize: none;
+        overflow: hidden;
+        font-family: system-ui, sans-serif;
+        line-height: 1.25;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <select id="windowSelect">
+        <option value="">— sélectionnez une fenêtre —</option>
+      </select>
+      <button id="refresh">Rafraîchir</button>
+      <button id="connect">Streamer</button>
+      <input
+        id="saveDir"
+        type="text"
+        placeholder="dossier de capture (défaut : Images/appMirror)"
+        title="Chemin local où écrire les captures (côté machine du backend)"
+      />
+      <button id="shot" title="Sauvegarde la frame courante en JPEG">📷 Capture</button>
+      <button id="rec" title="Enregistre une séquence d'images (JPEG)">⏺ REC</button>
+      <span id="status">déconnecté</span>
+    </header>
+
+    <div id="toolbar">
+      <button class="tool active" data-tool="cursor" title="Contrôle distant (souris/clavier injectés)">🖱️</button>
+      <button class="tool" data-tool="select" title="Sélection / déplacement (Suppr = effacer)">⭡</button>
+      <span class="sep"></span>
+      <button class="tool" data-tool="text" title="Texte">T</button>
+      <button class="tool" data-tool="rect" title="Rectangle">▭</button>
+      <button class="tool" data-tool="ellipse" title="Ellipse">◯</button>
+      <button class="tool" data-tool="line" title="Ligne">╱</button>
+      <button class="tool" data-tool="arrow" title="Flèche">→</button>
+      <button class="tool" data-tool="pen" title="Plume libre">✎</button>
+      <button class="tool" data-tool="marker" title="Marqueur (surligneur)">🖍️</button>
+      <span class="sep"></span>
+      <button class="tool" data-tool="ruler" title="Règles &amp; mesure : glisser = mesurer, tirer depuis une règle = guide">📏</button>
+      <button class="tool" data-tool="slice" title="Découpe en zones (slices)">✂️</button>
+      <span class="sep"></span>
+      <input type="color" id="annColor" value="#ff3355" title="Couleur" />
+      <label title="Épaisseur de trait"><input type="range" id="annWidth" min="1" max="16" step="1" value="4" /><span id="annWidthVal">4</span></label>
+      <label title="Remplir les formes"><input type="checkbox" id="annFill" /> Remplir</label>
+      <span class="sep"></span>
+      <button id="undoBtn" title="Annuler (Ctrl+Z)">↶</button>
+      <button id="redoBtn" title="Rétablir (Ctrl+Y)">↷</button>
+      <button id="clearBtn" title="Tout effacer">🗑</button>
+      <button id="exportBtn" title="Télécharge la frame + annotations en PNG">💾 PNG</button>
+      <button id="slicesJsonBtn" hidden title="Copie les zones de découpe (px natifs) en JSON">⧉ Zones JSON</button>
+    </div>
+
+    <main>
+      <div id="stage" data-tool="cursor">
+        <canvas id="screen" width="1280" height="720" tabindex="0"></canvas>
+        <svg id="overlay" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" preserveAspectRatio="none"></svg>
+        <canvas id="rulerTop" class="ruler"></canvas>
+        <canvas id="rulerLeft" class="ruler"></canvas>
+        <div id="coordChip"></div>
+      </div>
+    </main>
+    <!-- PIN Unlock Modal -->
+    <div id="pinModal" style="display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); z-index: 1000; align-items: center; justify-content: center;">
+      <div style="background: #1d2026; padding: 2rem; border-radius: 8px; border: 1px solid #3a3f49; width: 320px; text-align: center; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.6); font-family: system-ui, sans-serif;">
+        <h3 style="margin-top: 0; color: #fff; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+          <span>🔒</span> Application Locked
+        </h3>
+        <p style="font-size: 0.9rem; opacity: 0.8; margin-bottom: 1.5rem; color: #e6e6e6;">
+          Enter the security PIN code to access this application.
+        </p>
+        <input
+          type="password"
+          id="pinInput"
+          maxlength="10"
+          placeholder="PIN Code"
+          style="width: 100%; box-sizing: border-box; padding: 0.6rem; margin-bottom: 1.2rem; text-align: center; font-size: 1.3rem; background: #0f1114; color: #fff; border: 1px solid #3a3f49; border-radius: 4px; letter-spacing: 0.4rem; outline: none;"
+          autofocus
+        />
+        <div id="pinError" style="color: #ff3355; font-size: 0.85rem; margin-bottom: 1.2rem; min-height: 1.2rem; text-align: center;"></div>
+        <div style="display: flex; gap: 0.75rem; justify-content: center;">
+          <button id="pinCancel" style="flex: 1; padding: 0.5rem; background: #2a2f38; border: 1px solid #3a3f49; border-radius: 4px; color: #e6e6e6; cursor: pointer;">Cancel</button>
+          <button id="pinSubmit" style="flex: 1; padding: 0.5rem; background: #2f6fb3; border: 1px solid #4a8fd6; border-radius: 4px; color: #e6e6e6; cursor: pointer;">Unlock</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

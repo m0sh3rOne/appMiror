@@ -1,0 +1,47 @@
+[package]
+name = "appmirror-backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dirs = "5"
+# MCP : identifiants de session SSE, flux SSE, encodage des ressources binaires.
+uuid = { version = "1", features = ["v4"] }
+tokio-stream = "0.1"
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rust-embed = "8.0"
+eframe = "0.27"
+local-ip-address = "0.6"
+webbrowser = "1.0"
+
+# Capture: Windows Graphics Capture wrapper
+[target.'cfg(windows)'.dependencies]
+windows-capture = "1.4"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+] }
+
+# Capture/input Linux : X11 (fonctionne aussi sous XWayland). Pur Rust, pas de
+# lib C. XTest pour l'injection (pas de root, contrairement à /dev/uinput).
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["xtest"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
