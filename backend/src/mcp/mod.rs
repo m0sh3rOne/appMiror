@@ -101,16 +101,30 @@ fn tool_definitions() -> Value {
                 "required": ["action"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "get_window_screenshot",
+            "description": "Prend une capture d'écran de la fenêtre actuellement attachée.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
+            "name": "launch_app",
+            "description": "Lance une application en tâche de fond sur la machine hôte.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "La commande ou le chemin de l'exécutable à lancer." },
+                    "arguments": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Arguments optionnels à passer à l'exécutable."
+                    }
+                },
+                "required": ["command"],
+                "additionalProperties": false
+            }
         }
     ])
-}
-
-/// Enveloppe un résultat d'outil au format MCP (`content` + `isError`).
-fn tool_result(text: String, is_error: bool) -> Value {
-    json!({
-        "content": [ { "type": "text", "text": text } ],
-        "isError": is_error
-    })
 }
 
 async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> {
@@ -120,17 +134,24 @@ async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> 
         .ok_or_else(|| McpError { code: -32602, message: "paramètre 'name' manquant".into() })?;
     let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
 
-    // Ok(texte) = succès ; Err(texte) = échec métier -> isError. Un outil
-    // inconnu est en revanche une erreur protocolaire (-32602).
-    let outcome = match name {
-        "list_windows" => tool_list_windows(state),
-        "attach_to_window" => tool_attach(args, state),
-        "inject_input" => tool_inject(args, state),
+    let outcome: Result<Value, String> = match name {
+        "list_windows" => tool_list_windows(state).map(|t| json!([ { "type": "text", "text": t } ])),
+        "attach_to_window" => tool_attach(args, state).map(|t| json!([ { "type": "text", "text": t } ])),
+        "inject_input" => tool_inject(args, state).map(|t| json!([ { "type": "text", "text": t } ])),
+        "get_window_screenshot" => tool_screenshot(state).await.map(|b64| json!([ { "type": "image", "data": b64, "mimeType": "image/jpeg" } ])),
+        "launch_app" => tool_launch(args).map(|t| json!([ { "type": "text", "text": t } ])),
         other => return Err(McpError { code: -32602, message: format!("outil inconnu: {other}") }),
     };
+
     Ok(match outcome {
-        Ok(text) => tool_result(text, false),
-        Err(text) => tool_result(text, true),
+        Ok(content) => json!({
+            "content": content,
+            "isError": false
+        }),
+        Err(err_text) => json!({
+            "content": [ { "type": "text", "text": err_text } ],
+            "isError": true
+        }),
     })
 }
 
@@ -169,9 +190,10 @@ fn tool_attach(args: Value, state: &AppState) -> Result<String, String> {
     input::focus_window(id);
     *state.attached.lock().unwrap() = Some(AttachedWindow { id, width, height });
 
-    // Informe le superviseur humain si un WebSocket est connecté.
-    let _ = state.notices.send(format!("agent MCP attaché à la fenêtre {id} ({width}×{height})"));
-    Ok(format!("attaché à la fenêtre {id} ({width}×{height})"))
+    // Informe le superviseur humain si un WebSocket est connecté (texte affiché
+    // dans l'UI, donc en anglais).
+    let _ = state.notices.send(format!("MCP agent attached to window {id} ({width}×{height})"));
+    Ok(format!("attached to window {id} ({width}×{height})"))
 }
 
 /// Dénormalise (x,y) ∈ [0,1] vers des pixels client de la fenêtre attachée.
@@ -342,3 +364,74 @@ async fn resources_read(params: Value) -> Result<Value, McpError> {
         "contents": [ { "uri": uri, "mimeType": "image/jpeg", "blob": blob } ]
     }))
 }
+
+async fn tool_screenshot(state: &AppState) -> Result<String, String> {
+    let target = *state.attached.lock().unwrap();
+    let Some(target) = target else {
+        return Err("aucune fenêtre attachée (appeler attach_to_window d'abord)".into());
+    };
+
+    // Démarre une session de capture temporaire
+    // Qualité: 80, Échelle: 1.0, Curseur: vrai
+    let (session, mut rx) = capture::start(target.id, 80, 1.0, true)
+        .map_err(|e| format!("impossible de démarrer la capture: {e}"))?;
+
+    // Attendre la première frame non vide
+    let mut frame_bytes = rx.borrow().clone();
+    if frame_bytes.is_empty() {
+        tokio::select! {
+            res = rx.changed() => {
+                if res.is_ok() {
+                    frame_bytes = rx.borrow().clone();
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(1500)) => {}
+        }
+    }
+
+    // Arrêter la capture immédiatement
+    let _ = session.stop();
+
+    if frame_bytes.is_empty() {
+        return Err("délai dépassé pour recevoir la frame de capture".into());
+    }
+
+    // Encoder en base64
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&frame_bytes);
+    Ok(b64)
+}
+
+fn tool_launch(args: Value) -> Result<String, String> {
+    let command = args
+        .get("command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "paramètre 'command' manquant".to_string())?;
+
+    let arguments: Vec<String> = if let Some(arr) = args.get("arguments").and_then(Value::as_array) {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Lance le processus en tâche de fond
+    let mut cmd = std::process::Command::new(command);
+    cmd.args(&arguments);
+
+    // Sous Windows, empêcher l'apparition de la console noire pour les apps GUI
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+
+    match cmd.spawn() {
+        Ok(child) => {
+            let pid = child.id();
+            Ok(format!("application lancée avec succès (PID: {pid})"))
+        }
+        Err(e) => Err(format!("impossible de lancer l'application: {e}")),
+    }
+}
+

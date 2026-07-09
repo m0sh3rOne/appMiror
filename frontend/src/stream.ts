@@ -8,6 +8,8 @@ export interface StreamHandlers {
   onStatus: (status: string) => void;
   /** Appelé quand la résolution native de la frame change (redimensionne le canvas). */
   onFrameSize?: (width: number, height: number) => void;
+  /** Appelé dès que la connexion WebSocket est ouverte (ou rétablie). */
+  onOpen?: () => void;
 }
 
 export class StreamClient {
@@ -29,9 +31,12 @@ export class StreamClient {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
 
-    ws.onopen = () => this.handlers.onStatus("connecté");
-    ws.onclose = () => this.handlers.onStatus("déconnecté");
-    ws.onerror = () => this.handlers.onStatus("erreur WebSocket");
+    ws.onopen = () => {
+      this.handlers.onStatus("connected");
+      this.handlers.onOpen?.();
+    };
+    ws.onclose = () => this.handlers.onStatus("disconnected");
+    ws.onerror = () => this.handlers.onStatus("WebSocket error");
 
     ws.onmessage = async (ev) => {
       if (typeof ev.data === "string") {

@@ -18,7 +18,13 @@ pub enum ClientMessage {
         pin: Option<String>,
         quality: Option<u8>,
         scale: Option<f32>,
+        /// Inclure le curseur distant dans la capture (défaut : true).
+        show_cursor: Option<bool>,
     },
+    /// Bascule le mode d'injection : `background=true` cible le HWND via
+    /// `PostMessage` (sans voler le focus ni bouger le curseur physique),
+    /// `false` = `SendInput` classique au premier plan.
+    SetInputMode { background: bool },
     /// Déplacement souris, coords natives (px client).
     MouseMove { x: i32, y: i32 },
     /// Bouton souris pressé/relâché.

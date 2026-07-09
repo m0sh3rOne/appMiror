@@ -9,19 +9,25 @@
 //! injecter en arrière-plan sans voler le focus — ne marche pas avec les apps
 //! DirectX / plein écran exclusif.
 
+use std::sync::atomic::{AtomicIsize, Ordering};
+
 use crate::protocol::MouseButton;
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    GetFocus, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
     KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
     MOUSEINPUT, MOUSE_EVENT_FLAGS, MapVirtualKeyW, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
 };
-use windows::Win32::Graphics::Gdi::ClientToScreen;
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetSystemMetrics, SetForegroundWindow, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    ChildWindowFromPointEx, GetClientRect, GetGUIThreadInfo, GetSystemMetrics,
+    GetWindowThreadProcessId, IsChild, PostMessageW, SetForegroundWindow, CWP_SKIPDISABLED,
+    CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GUITHREADINFO, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
 
 fn as_hwnd(id: isize) -> HWND {
@@ -176,4 +182,192 @@ pub fn key(code: &str, pressed: bool) {
         SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
     }
     let _ = KEYBD_EVENT_FLAGS(0); // silence unused import warning path
+}
+
+// ============================================================================
+// Injection en arrière-plan via PostMessage (sans focus, sans curseur physique)
+//
+// Chaque message est posté dans la file de la fenêtre cible. Pour la souris, on
+// résout le contrôle enfant le plus profond sous le point (les clics atteignent
+// ainsi boutons/champs même en arrière-plan). Pour le clavier, on vise le
+// contrôle focalisé du thread de la fenêtre et on émet WM_CHAR pour que le texte
+// apparaisse réellement dans les contrôles d'édition.
+//
+// Limites : ne fonctionne pas pour les apps DirectX / plein écran exclusif ; la
+// saisie clavier en arrière-plan dépend de l'app (certaines ignorent les
+// messages synthétiques qui ne passent pas par TranslateMessage).
+// ============================================================================
+
+const MK_LBUTTON: usize = 0x0001;
+const MK_RBUTTON: usize = 0x0002;
+const MK_MBUTTON: usize = 0x0010;
+
+/// Dernier contrôle enfant cliqué en arrière-plan (HWND en `isize`, 0 = aucun).
+/// Une fenêtre en arrière-plan n'a pas de « contrôle focalisé » au sens de l'OS :
+/// on route donc le clavier vers le champ que l'utilisateur distant a cliqué en
+/// dernier — exactement comme on placerait le curseur avant de saisir.
+static LAST_KBD_TARGET: AtomicIsize = AtomicIsize::new(0);
+
+/// Empaquette (x,y) client dans un LPARAM (low=x, high=y), façon MAKELPARAM.
+fn make_lparam(x: i32, y: i32) -> LPARAM {
+    LPARAM((((y & 0xFFFF) << 16) | (x & 0xFFFF)) as isize)
+}
+
+fn post(hwnd: HWND, msg: u32, wparam: usize, lparam: LPARAM) {
+    unsafe {
+        let _ = PostMessageW(hwnd, msg, WPARAM(wparam), lparam);
+    }
+}
+
+/// Contrôle enfant le plus profond de `root` sous le point client `pt` (relatif
+/// à `root`), avec le point reprojeté dans le repère client de ce contrôle.
+fn deepest_child(root: HWND, pt: POINT) -> (HWND, POINT) {
+    let mut parent = root;
+    let mut local = pt;
+    for _ in 0..16 {
+        let child = unsafe {
+            ChildWindowFromPointEx(
+                parent,
+                local,
+                CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT | CWP_SKIPDISABLED,
+            )
+        };
+        if child.0.is_null() || child == parent {
+            break;
+        }
+        // Reprojette le point : repère client parent -> écran -> client enfant.
+        let mut sp = local;
+        unsafe {
+            let _ = ClientToScreen(parent, &mut sp);
+            let _ = ScreenToClient(child, &mut sp);
+        }
+        parent = child;
+        local = sp;
+    }
+    (parent, local)
+}
+
+pub fn mouse_move_bg(hwnd: isize, x: i32, y: i32) {
+    let (target, pt) = deepest_child(as_hwnd(hwnd), POINT { x, y });
+    post(target, WM_MOUSEMOVE, 0, make_lparam(pt.x, pt.y));
+}
+
+pub fn mouse_button_bg(hwnd: isize, button: MouseButton, pressed: bool, x: i32, y: i32) {
+    let (target, pt) = deepest_child(as_hwnd(hwnd), POINT { x, y });
+    // Un appui mémorise le champ visé : c'est la cible du clavier en arrière-plan.
+    if pressed {
+        LAST_KBD_TARGET.store(target.0 as isize, Ordering::Relaxed);
+    }
+    let lp = make_lparam(pt.x, pt.y);
+    let (msg, mk) = match (button, pressed) {
+        (MouseButton::Left, true) => (WM_LBUTTONDOWN, MK_LBUTTON),
+        (MouseButton::Left, false) => (WM_LBUTTONUP, 0),
+        (MouseButton::Right, true) => (WM_RBUTTONDOWN, MK_RBUTTON),
+        (MouseButton::Right, false) => (WM_RBUTTONUP, 0),
+        (MouseButton::Middle, true) => (WM_MBUTTONDOWN, MK_MBUTTON),
+        (MouseButton::Middle, false) => (WM_MBUTTONUP, 0),
+    };
+    // Un survol préalable positionne l'état de hover du contrôle.
+    post(target, WM_MOUSEMOVE, mk, lp);
+    post(target, msg, mk, lp);
+}
+
+pub fn wheel_bg(hwnd: isize, delta: i32, x: i32, y: i32) {
+    let root = as_hwnd(hwnd);
+    let (target, _local) = deepest_child(root, POINT { x, y });
+    // WM_MOUSEWHEEL attend le point en coordonnées ÉCRAN dans lParam.
+    let mut sp = POINT { x, y };
+    unsafe {
+        let _ = ClientToScreen(root, &mut sp);
+    }
+    let notches = (delta * 120) as i16;
+    let wparam = ((notches as u16 as usize) << 16) & 0xFFFF_0000;
+    post(target, WM_MOUSEWHEEL, wparam, make_lparam(sp.x, sp.y));
+}
+
+/// Contrôle focalisé du thread propriétaire de `root` (sinon `root` lui-même).
+///
+/// Pour une fenêtre en arrière-plan, `GetGUIThreadInfo` ne renvoie pas le focus
+/// (notion propre au thread au premier plan). On attache donc temporairement
+/// notre file d'entrée à celle du thread cible (`AttachThreadInput`) : `GetFocus`
+/// renvoie alors le contrôle réellement focalisé dans la cible (ex. le champ
+/// d'édition), ce qui permet à `WM_CHAR` d'y insérer le texte. L'attache ne
+/// modifie ni le focus ni l'ordre d'empilement — le focus de l'hôte est préservé.
+fn focused_control(root: HWND) -> HWND {
+    unsafe {
+        let target_tid = GetWindowThreadProcessId(root, None);
+        if target_tid == 0 {
+            return root;
+        }
+        let cur_tid = GetCurrentThreadId();
+        let mut focused = HWND::default();
+
+        let attached = target_tid != cur_tid
+            && AttachThreadInput(cur_tid, target_tid, true).as_bool();
+        let f = GetFocus();
+        if !f.0.is_null() {
+            focused = f;
+        }
+        if attached {
+            let _ = AttachThreadInput(cur_tid, target_tid, false);
+        }
+
+        // Repli : GUITHREADINFO (utile si le thread cible est au premier plan).
+        if focused.0.is_null() {
+            let mut gti = GUITHREADINFO {
+                cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+                ..Default::default()
+            };
+            if GetGUIThreadInfo(target_tid, &mut gti).is_ok() && !gti.hwndFocus.0.is_null() {
+                focused = gti.hwndFocus;
+            }
+        }
+
+        if focused.0.is_null() {
+            root
+        } else {
+            focused
+        }
+    }
+}
+
+/// Cible clavier en arrière-plan : le dernier champ cliqué s'il appartient
+/// toujours à `root`, sinon le contrôle focalisé (cas où la fenêtre est au
+/// premier plan), sinon `root`.
+fn kbd_target(root: HWND) -> HWND {
+    let last = LAST_KBD_TARGET.load(Ordering::Relaxed);
+    if last != 0 {
+        let h = HWND(last as *mut core::ffi::c_void);
+        if h != root && unsafe { IsChild(root, h).as_bool() } {
+            return h;
+        }
+    }
+    focused_control(root)
+}
+
+pub fn key_bg(hwnd: isize, code: &str, pressed: bool) {
+    let Some(vk) = code_to_vk(code) else {
+        tracing::debug!("touche non mappée (bg): {code}");
+        return;
+    };
+    let target = kbd_target(as_hwnd(hwnd));
+    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
+    let mut lparam = 1u32 | (scan << 16); // compteur de répétition = 1 + scancode
+    let msg = if pressed {
+        WM_KEYDOWN
+    } else {
+        lparam |= (1 << 30) | (1 << 31); // bits « précédemment enfoncée » + relâche
+        WM_KEYUP
+    };
+    // On ne poste QUE WM_KEYDOWN/WM_KEYUP : la boucle de messages de l'app cible
+    // fait le TranslateMessage et produit le WM_CHAR correct pour la disposition
+    // clavier active. Synthétiser nous-mêmes un WM_CHAR doublerait la saisie et
+    // ignorerait la disposition.
+    //
+    // Limite : PostMessage ne met pas à jour l'état clavier du thread cible, donc
+    // son TranslateMessage ne « voit » pas Shift enfoncé. Les caractères NON
+    // shiftés (minuscules, chiffres/symboles de base de la disposition) et les
+    // touches de navigation passent ; les majuscules/caractères shiftés sont
+    // best-effort et généralement non rendus en arrière-plan.
+    post(target, msg, vk as usize, LPARAM(lparam as isize));
 }

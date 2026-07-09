@@ -112,13 +112,20 @@ pub fn start(
     hwnd: isize,
     quality: u8,
     scale: f32,
+    show_cursor: bool,
 ) -> anyhow::Result<(CaptureSession, watch::Receiver<Vec<u8>>)> {
     let window = Window::from_raw_hwnd(hwnd as *mut core::ffi::c_void);
     let (tx, rx) = watch::channel(Vec::new());
 
+    let cursor = if show_cursor {
+        CursorCaptureSettings::WithCursor
+    } else {
+        CursorCaptureSettings::WithoutCursor
+    };
+
     let settings = Settings::new(
         window,
-        CursorCaptureSettings::WithCursor,
+        cursor,
         DrawBorderSettings::WithoutBorder,
         SecondaryWindowSettings::Default,
         MinimumUpdateIntervalSettings::Default,

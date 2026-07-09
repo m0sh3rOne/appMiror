@@ -64,3 +64,50 @@ pub fn key(code: &str, pressed: bool) {
     #[cfg(not(any(windows, target_os = "linux")))]
     let _ = (code, pressed);
 }
+
+// ── Injection en arrière-plan (sans focus) ──────────────────────────────────
+//
+// Ces variantes ciblent directement le HWND via `PostMessage` (Windows) : le
+// curseur physique de l'hôte ne bouge pas et le focus n'est pas volé. Sous
+// Linux, XTest est global (pas de vrai ciblage par fenêtre) : on retombe sur
+// l'injection au premier plan — le mode « arrière-plan » y est donc un no-op
+// fonctionnel, documenté comme tel.
+
+pub fn mouse_move_bg(hwnd: isize, x: i32, y: i32) {
+    #[cfg(windows)]
+    imp::mouse_move_bg(hwnd, x, y);
+    #[cfg(target_os = "linux")]
+    imp::mouse_move(hwnd, x, y);
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let _ = (hwnd, x, y);
+}
+
+pub fn mouse_button_bg(hwnd: isize, button: MouseButton, pressed: bool, x: i32, y: i32) {
+    #[cfg(windows)]
+    imp::mouse_button_bg(hwnd, button, pressed, x, y);
+    #[cfg(target_os = "linux")]
+    imp::mouse_button(hwnd, button, pressed, x, y);
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let _ = (hwnd, button, pressed, x, y);
+}
+
+pub fn wheel_bg(hwnd: isize, delta: i32, x: i32, y: i32) {
+    #[cfg(windows)]
+    imp::wheel_bg(hwnd, delta, x, y);
+    #[cfg(target_os = "linux")]
+    imp::wheel(hwnd, delta, x, y);
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let _ = (hwnd, delta, x, y);
+}
+
+pub fn key_bg(hwnd: isize, code: &str, pressed: bool) {
+    #[cfg(windows)]
+    imp::key_bg(hwnd, code, pressed);
+    #[cfg(target_os = "linux")]
+    {
+        let _ = hwnd;
+        imp::key(code, pressed);
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let _ = (hwnd, code, pressed);
+}

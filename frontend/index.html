@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>appMirror — déport d'affichage</title>
+    <title>appMirror — remote window mirroring</title>
     <style>
       :root { color-scheme: dark; }
       body {
@@ -17,19 +17,66 @@
       }
       header {
         display: flex;
-        gap: 0.75rem;
+        flex-wrap: wrap;
+        gap: 0.5rem 0.55rem;
         align-items: center;
-        padding: 0.6rem 1rem;
+        padding: 0.55rem 1rem;
         background: #1d2026;
         border-bottom: 1px solid #2a2e36;
       }
-      select { min-width: 320px; padding: 0.3rem; background:#0f1114; color:#e6e6e6; border:1px solid #333; border-radius:4px;}
-      input[type="text"] { flex: 1; min-width: 180px; padding: 0.35rem 0.5rem; background:#0f1114; color:#e6e6e6; border:1px solid #333; border-radius:4px; }
-      button.recording { background:#7a2626; border-color:#a33; }
+      /* Groupes logiques de contrôles, séparés par des filets verticaux. */
+      header .grp { display: flex; align-items: center; gap: 0.4rem; }
+      header .sep { width: 1px; align-self: center; height: 1.7rem; background: #33383f; margin: 0 0.1rem; }
+
+      select {
+        padding: 0.4rem 0.5rem; background:#0f1114; color:#e6e6e6;
+        border:1px solid #333; border-radius:6px; cursor: pointer; font-size: 0.85rem;
+      }
+      select:hover { border-color:#4a505c; }
+      /* Largeurs prévisibles (pas d'expansion gloutonne) : les contrôles restent
+         groupés à gauche et le statut garde sa place à droite tant qu'il y a de la
+         place ; tout rétrécit puis passe à la ligne sur écran étroit. */
+      #windowSelect { flex: 0 1 260px; min-width: 180px; }
+
+      input[type="text"] {
+        padding: 0.4rem 0.55rem; background:#0f1114; color:#e6e6e6;
+        border:1px solid #333; border-radius:6px; font-size: 0.85rem;
+      }
+      #saveDir { flex: 0 1 190px; min-width: 120px; }
+
+      /* Un display explicite sur les boutons ne doit pas neutraliser l'attribut hidden. */
+      [hidden] { display: none !important; }
+      button {
+        display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem;
+        min-height: 2rem; padding: 0.35rem 0.7rem;
+        cursor: pointer; border-radius: 6px;
+        border: 1px solid #3a3f49; background: #2a2f38; color: #e6e6e6;
+        font-size: 0.85rem; line-height: 1; white-space: nowrap;
+        transition: background 0.12s ease, border-color 0.12s ease;
+      }
+      button:hover { background:#343a45; border-color:#4a505c; }
+      button:active { transform: translateY(1px); }
+      button:focus-visible { outline: 2px solid #4a8fd6; outline-offset: 1px; }
+      /* Action principale mise en avant. */
+      .btn-primary { background:#2f6fb3; border-color:#4a8fd6; color:#fff; font-weight: 600; }
+      .btn-primary:hover { background:#3a80c9; border-color:#5a9de0; }
+      button.recording { background:#7a2626; border-color:#a33; color:#fff; }
       button.recording:hover { background:#8d2e2e; }
-      button { padding: 0.35rem 0.8rem; cursor: pointer; border-radius:4px; border:1px solid #3a3f49; background:#2a2f38; color:#e6e6e6;}
-      button:hover { background:#343a45; }
-      #status { margin-left: auto; font-size: 0.85rem; opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+      #status {
+        margin-left: auto; font-size: 0.8rem; opacity: 0.9;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px;
+        padding: 0.3rem 0.65rem; background:#14161a; border:1px solid #2a2e36;
+        border-radius: 999px; font-variant-numeric: tabular-nums;
+      }
+      header label.opt {
+        display: inline-flex; align-items: center; gap: 0.35rem;
+        font-size: 0.82rem; opacity: 0.92; white-space: nowrap;
+        cursor: pointer; user-select: none;
+        padding: 0.25rem 0.45rem; border-radius: 6px; border: 1px solid transparent;
+      }
+      header label.opt:hover { background:#23272e; border-color:#2f343c; }
+      header label.opt input { cursor: pointer; margin: 0; }
 
       /* ── Barre d'outils d'annotation ─────────────────────────────────── */
       #toolbar {
@@ -57,7 +104,11 @@
       #toolbar input[type="range"] { width: 90px; }
 
       /* ── Scène : canvas vidéo + overlay d'annotation + règles ────────── */
-      main { flex: 1; display: grid; place-items: center; overflow: hidden; padding: 0.75rem; min-height: 0; }
+      /* place-items: safe center => en modes "Fill width"/"Actual size" où le
+         #stage peut dépasser, l'alignement retombe sur "start" et le contenu
+         reste atteignable au scroll (overflow: auto). En mode "Fit", le stage
+         ne dépasse jamais : aucune barre de défilement. */
+      main { flex: 1; display: grid; place-items: safe center; overflow: auto; padding: 0.75rem; min-height: 0; min-width: 0; }
       /* #stage est dimensionné en px par main.ts (ajustement letterbox) ;
          canvas et SVG le remplissent exactement, donc l'overlay est toujours
          aligné pixel à pixel sur la vidéo. */
@@ -129,51 +180,80 @@
   </head>
   <body>
     <header>
-      <select id="windowSelect">
-        <option value="">— sélectionnez une fenêtre —</option>
-      </select>
-      <button id="refresh">Rafraîchir</button>
-      <select id="qualitySelect" style="padding: 0.35rem; background:#0f1114; color:#e6e6e6; border:1px solid #333; border-radius:4px; margin-right: 0.15rem; outline: none; cursor: pointer;">
-        <option value="high">HD (100% res, 75% qual)</option>
-        <option value="medium" selected>Medium (70% res, 60% qual)</option>
-        <option value="low">Low (50% res, 45% qual)</option>
-      </select>
-      <button id="connect">Streamer</button>
-      <input
-        id="saveDir"
-        type="text"
-        placeholder="dossier de capture (défaut : Images/appMirror)"
-        title="Chemin local où écrire les captures (côté machine du backend)"
-      />
-      <button id="shot" title="Sauvegarde la frame courante en JPEG">📷 Capture</button>
-      <button id="rec" title="Enregistre une séquence d'images (JPEG)">⏺ REC</button>
-      <span id="status">déconnecté</span>
+      <div class="grp" role="group" aria-label="Source window">
+        <select id="windowSelect" title="Native window to stream">
+          <option value="">— select a window —</option>
+        </select>
+        <button id="refresh" title="Refresh the window list">⟳ Refresh</button>
+      </div>
+
+      <span class="sep"></span>
+
+      <div class="grp" role="group" aria-label="Stream">
+        <select id="qualitySelect" title="Stream quality: resolution and JPEG compression">
+          <option value="high" selected>HD · 100% / 75%</option>
+          <option value="medium">Medium · 70% / 60%</option>
+          <option value="low">Eco · 50% / 45%</option>
+        </select>
+        <select id="fitMode" title="Display mode: how the mirror fits the window">
+          <option value="fit" selected>Fit to window</option>
+          <option value="fill">Fill width</option>
+          <option value="actual">Actual size (1:1)</option>
+        </select>
+        <button id="connect" class="btn-primary" title="Start streaming the selected window">▶ Stream</button>
+      </div>
+
+      <span class="sep"></span>
+
+      <div class="grp" role="group" aria-label="Disk capture">
+        <input
+          id="saveDir"
+          type="text"
+          placeholder="capture folder…"
+          title="Local path where captures are written (on the backend machine). Default: Pictures/appMirror"
+        />
+        <button id="shot" title="Save the current frame as JPEG">📷 Capture</button>
+        <button id="rec" title="Record a sequence of images (JPEG)">⏺ REC</button>
+      </div>
+
+      <span class="sep"></span>
+
+      <div class="grp" role="group" aria-label="Display and input options">
+        <label class="opt" title="Include the remote window's cursor in the video stream">
+          <input type="checkbox" id="showCursor" checked /> Cursor
+        </label>
+        <label class="opt" title="Inject input via PostMessage without stealing the host user's focus (background control)">
+          <input type="checkbox" id="bgInput" /> Background
+        </label>
+      </div>
+
+      <span id="status">disconnected</span>
     </header>
 
     <div id="toolbar">
-      <button class="tool active" data-tool="cursor" title="Contrôle distant (souris/clavier injectés)">🖱️</button>
-      <button class="tool" data-tool="select" title="Sélection / déplacement (Suppr = effacer)">⭡</button>
+      <button class="tool active" data-tool="cursor" title="Remote control (mouse/keyboard injected)">🖱️</button>
+      <button class="tool" data-tool="select" title="Select / move (Del = delete)">⭡</button>
       <span class="sep"></span>
-      <button class="tool" data-tool="text" title="Texte">T</button>
+      <button class="tool" data-tool="text" title="Text">T</button>
       <button class="tool" data-tool="rect" title="Rectangle">▭</button>
       <button class="tool" data-tool="ellipse" title="Ellipse">◯</button>
-      <button class="tool" data-tool="line" title="Ligne">╱</button>
-      <button class="tool" data-tool="arrow" title="Flèche">→</button>
-      <button class="tool" data-tool="pen" title="Plume libre">✎</button>
-      <button class="tool" data-tool="marker" title="Marqueur (surligneur)">🖍️</button>
+      <button class="tool" data-tool="line" title="Line">╱</button>
+      <button class="tool" data-tool="arrow" title="Arrow">→</button>
+      <button class="tool" data-tool="pen" title="Freehand pen">✎</button>
+      <button class="tool" data-tool="marker" title="Marker (highlighter)">🖍️</button>
       <span class="sep"></span>
-      <button class="tool" data-tool="ruler" title="Règles &amp; mesure : glisser = mesurer, tirer depuis une règle = guide">📏</button>
-      <button class="tool" data-tool="slice" title="Découpe en zones (slices)">✂️</button>
+      <button class="tool" data-tool="ruler" title="Rulers &amp; measure: drag to measure, drag from a ruler for a guide">📏</button>
+      <button class="tool" data-tool="slice" title="Slice into zones">✂️</button>
       <span class="sep"></span>
-      <input type="color" id="annColor" value="#ff3355" title="Couleur" />
-      <label title="Épaisseur de trait"><input type="range" id="annWidth" min="1" max="16" step="1" value="4" /><span id="annWidthVal">4</span></label>
-      <label title="Remplir les formes"><input type="checkbox" id="annFill" /> Remplir</label>
+      <input type="color" id="annColor" value="#ff3355" title="Color" />
+      <label title="Stroke width"><input type="range" id="annWidth" min="1" max="16" step="1" value="4" /><span id="annWidthVal">4</span></label>
+      <label title="Fill shapes"><input type="checkbox" id="annFill" /> Fill</label>
       <span class="sep"></span>
-      <button id="undoBtn" title="Annuler (Ctrl+Z)">↶</button>
-      <button id="redoBtn" title="Rétablir (Ctrl+Y)">↷</button>
-      <button id="clearBtn" title="Tout effacer">🗑</button>
-      <button id="exportBtn" title="Télécharge la frame + annotations en PNG">💾 PNG</button>
-      <button id="slicesJsonBtn" hidden title="Copie les zones de découpe (px natifs) en JSON">⧉ Zones JSON</button>
+      <button id="undoBtn" title="Undo (Ctrl+Z)">↶</button>
+      <button id="redoBtn" title="Redo (Ctrl+Y)">↷</button>
+      <button id="clearBtn" title="Clear all">🗑</button>
+      <button id="exportBtn" title="Download frame + annotations as PNG">💾 PNG</button>
+      <button id="slicesJsonBtn" hidden title="Copy slice zones (native px) as JSON">⧉ Zones JSON</button>
     </div>
 
     <main>

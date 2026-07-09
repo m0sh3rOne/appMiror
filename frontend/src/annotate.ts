@@ -266,7 +266,7 @@ export class Annotator {
     this.commitEditor();
     const prev = this.history.pop();
     if (prev === undefined) {
-      this.onStatus("rien à annuler");
+      this.onStatus("nothing to undo");
       return;
     }
     this.future.push(JSON.stringify(this.model));
@@ -278,7 +278,7 @@ export class Annotator {
   redo() {
     const next = this.future.pop();
     if (next === undefined) {
-      this.onStatus("rien à rétablir");
+      this.onStatus("nothing to redo");
       return;
     }
     this.history.push(JSON.stringify(this.model));
@@ -296,7 +296,7 @@ export class Annotator {
     this.measure = null;
     this.sel = null;
     this.render();
-    this.onStatus("annotations effacées (Ctrl+Z pour restaurer)");
+    this.onStatus("annotations cleared (Ctrl+Z to restore)");
   }
 
   /** Zones de découpe en px natifs, prêtes à coller (JSON). */
@@ -320,7 +320,7 @@ export class Annotator {
     const w = source.width;
     const h = source.height;
     if (w === 0 || h === 0) {
-      this.onStatus("rien à exporter : aucun flux");
+      this.onStatus("nothing to export: no stream");
       return;
     }
     const out = document.createElement("canvas");
@@ -351,7 +351,7 @@ export class Annotator {
     a.download = `appmirror_annot_${ts}.png`;
     a.href = out.toDataURL("image/png");
     a.click();
-    this.onStatus("PNG annoté téléchargé");
+    this.onStatus("annotated PNG downloaded");
   }
 
   // ── Conversion de coordonnées ────────────────────────────────────────────
@@ -629,7 +629,7 @@ export class Annotator {
           this.model.slices.push(sl);
           this.sel = { t: "slice", id: sl.id };
           this.onStatus(
-            `zone ${this.model.slices.length} : ${Math.round(sl.w)}×${Math.round(sl.h)} px`,
+            `zone ${this.model.slices.length}: ${Math.round(sl.w)}×${Math.round(sl.h)} px`,
           );
         }
         this.render();
@@ -643,7 +643,7 @@ export class Annotator {
           if (dx < 2 && dy < 2) {
             this.measure = null;
           } else {
-            this.onStatus(`mesure : ${dx} × ${dy} — ${Math.round(Math.hypot(dx, dy))} px`);
+            this.onStatus(`measure: ${dx} × ${dy} — ${Math.round(Math.hypot(dx, dy))} px`);
           }
         }
         this.renderDraft();
@@ -725,7 +725,7 @@ export class Annotator {
         if (guide.pos > 1 && guide.pos < max - 1) {
           this.pushHistory();
           this.model.guides.push(guide);
-          this.onStatus(`guide ${axis === "x" ? "vertical" : "horizontal"} à ${Math.round(guide.pos)} px`);
+          this.onStatus(`${axis === "x" ? "vertical" : "horizontal"} guide at ${Math.round(guide.pos)} px`);
         }
         this.render();
       };
@@ -1282,15 +1282,15 @@ function translated(s: Shape, dx: number, dy: number): Shape {
 }
 
 const TOOL_HINTS: Record<Tool, string> = {
-  cursor: "contrôle distant actif",
-  select: "cliquez une annotation pour la sélectionner ; glissez pour déplacer ; Suppr pour effacer ; double-clic sur un texte pour l'éditer",
-  text: "cliquez pour placer du texte (Entrée = valider, Maj+Entrée = nouvelle ligne)",
-  rect: "tracez un rectangle (contrôle distant en pause)",
-  ellipse: "tracez une ellipse (contrôle distant en pause)",
-  line: "tracez une ligne (contrôle distant en pause)",
-  arrow: "tracez une flèche (contrôle distant en pause)",
-  pen: "dessin à main levée (contrôle distant en pause)",
-  marker: "surlignage à main levée (contrôle distant en pause)",
-  ruler: "glissez pour mesurer ; tirez depuis une règle pour poser un guide (double-clic = supprimer)",
-  slice: "tracez des zones de découpe ; glissez = déplacer, poignée = redimensionner, double-clic = supprimer",
+  cursor: "remote control active",
+  select: "click an annotation to select it; drag to move; Del to delete; double-click text to edit",
+  text: "click to place text (Enter = confirm, Shift+Enter = new line)",
+  rect: "draw a rectangle (remote control paused)",
+  ellipse: "draw an ellipse (remote control paused)",
+  line: "draw a line (remote control paused)",
+  arrow: "draw an arrow (remote control paused)",
+  pen: "freehand drawing (remote control paused)",
+  marker: "freehand highlight (remote control paused)",
+  ruler: "drag to measure; drag from a ruler to add a guide (double-click = remove)",
+  slice: "draw slice zones; drag = move, handle = resize, double-click = delete",
 };

@@ -338,6 +338,9 @@ impl eframe::App for GuiApp {
                         ui.label("- appMirror includes an MCP (Model Context Protocol) server.");
                         ui.label("- You can connect AI agents (e.g. Claude Desktop, Cursor) to appMirror using the MCP Server Address displayed in the Connection Info section.");
                         ui.label("- The AI can list windows, attach to a window, and inject keyboard/mouse inputs natively.");
+                        ui.label("- To configure Antigravity IDE, add this to your mcp_config.json:");
+                        ui.add_space(2.0);
+                        ui.label("  \"mcpServers\": {\n    \"app-mirror\": {\n      \"serverUrl\": \"http://127.0.0.1:8080/api/mcp/sse\"\n    }\n  }");
                     });
                 });
             });

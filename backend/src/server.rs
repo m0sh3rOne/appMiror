@@ -27,6 +27,9 @@ struct Session {
     /// Clone du receiver de frames — sert aux captures disque.
     frames: Option<tokio::sync::watch::Receiver<Vec<u8>>>,
     recording: Option<recorder::Recording>,
+    /// Injection en arrière-plan (PostMessage) plutôt que SendInput au premier
+    /// plan : ne vole pas le focus de l'utilisateur hôte.
+    input_bg: bool,
 }
 
 impl Session {
@@ -105,7 +108,7 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
             }
         }
 
-        ClientMessage::SelectWindow { id, pin, quality, scale } => {
+        ClientMessage::SelectWindow { id, pin, quality, scale, show_cursor } => {
             let is_locked = {
                 let cfg_opt = state.config.lock().unwrap();
                 if let Some(cfg_mutex) = &*cfg_opt {
@@ -126,13 +129,17 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
 
             session.stop_capture();
 
-            input::focus_window(id);
+            // En mode arrière-plan, on ne vole PAS le focus de l'hôte.
+            if !session.input_bg {
+                input::focus_window(id);
+            }
             let (w, h) = input::client_size(id).unwrap_or((0, 0));
             session.hwnd = Some(id);
 
             let q = quality.unwrap_or(70);
             let s = scale.unwrap_or(1.0);
-            match capture::start(id, q, s) {
+            let cursor = show_cursor.unwrap_or(true);
+            match capture::start(id, q, s, cursor) {
                 Ok((control, mut rx)) => {
                     session.capture = Some(control);
                     session.frames = Some(rx.clone());
@@ -163,23 +170,53 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
             }
         }
 
+        ClientMessage::SetInputMode { background } => {
+            session.input_bg = background;
+            // Passer en avant-plan : on ramène la fenêtre au premier plan pour
+            // que SendInput l'atteigne. En arrière-plan, on ne touche rien.
+            if !background {
+                if let Some(hwnd) = session.hwnd {
+                    input::focus_window(hwnd);
+                }
+            }
+            tracing::info!("mode d'injection : {}", if background { "arrière-plan (PostMessage)" } else { "premier plan (SendInput)" });
+        }
+
         ClientMessage::MouseMove { x, y } => {
             if let Some(hwnd) = session.hwnd {
-                input::mouse_move(hwnd, x, y);
+                if session.input_bg {
+                    input::mouse_move_bg(hwnd, x, y);
+                } else {
+                    input::mouse_move(hwnd, x, y);
+                }
             }
         }
         ClientMessage::MouseButton { button, pressed, x, y } => {
             if let Some(hwnd) = session.hwnd {
-                input::mouse_button(hwnd, button, pressed, x, y);
+                if session.input_bg {
+                    input::mouse_button_bg(hwnd, button, pressed, x, y);
+                } else {
+                    input::mouse_button(hwnd, button, pressed, x, y);
+                }
             }
         }
         ClientMessage::Wheel { delta, x, y } => {
             if let Some(hwnd) = session.hwnd {
-                input::wheel(hwnd, delta, x, y);
+                if session.input_bg {
+                    input::wheel_bg(hwnd, delta, x, y);
+                } else {
+                    input::wheel(hwnd, delta, x, y);
+                }
             }
         }
         ClientMessage::Key { code, pressed } => {
-            input::key(&code, pressed);
+            if session.input_bg {
+                if let Some(hwnd) = session.hwnd {
+                    input::key_bg(hwnd, &code, pressed);
+                }
+            } else {
+                input::key(&code, pressed);
+            }
         }
 
         ClientMessage::Screenshot { dir } => {

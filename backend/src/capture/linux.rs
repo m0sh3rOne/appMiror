@@ -142,6 +142,9 @@ pub fn start(
     hwnd: isize,
     quality: u8,
     scale: f32,
+    // `GetImage` X11 ne compose pas le curseur dans l'image de la fenêtre :
+    // l'option n'a donc pas d'effet ici (contrairement à WGC sous Windows).
+    _show_cursor: bool,
 ) -> anyhow::Result<(CaptureSession, watch::Receiver<Vec<u8>>)> {
     let win = hwnd as Window;
     let (tx, rx) = watch::channel(Vec::new());

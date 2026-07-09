@@ -55,18 +55,19 @@ pub fn start(
     hwnd: isize,
     quality: u8,
     scale: f32,
+    show_cursor: bool,
 ) -> anyhow::Result<(CaptureSession, watch::Receiver<Vec<u8>>)> {
     #[cfg(windows)]
     {
-        self::windows::start(hwnd, quality, scale)
+        self::windows::start(hwnd, quality, scale, show_cursor)
     }
     #[cfg(target_os = "linux")]
     {
-        self::linux::start(hwnd, quality, scale)
+        self::linux::start(hwnd, quality, scale, show_cursor)
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
-        let _ = (hwnd, quality, scale);
+        let _ = (hwnd, quality, scale, show_cursor);
         anyhow::bail!("capture non implémentée sur cette plateforme")
     }
 }

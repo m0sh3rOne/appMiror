@@ -4,7 +4,8 @@ export type MouseButtonName = "left" | "right" | "middle";
 
 export type ClientMessage =
   | { type: "list_windows" }
-  | { type: "select_window"; id: number; pin?: string | null; quality?: number | null; scale?: number | null }
+  | { type: "select_window"; id: number; pin?: string | null; quality?: number | null; scale?: number | null; show_cursor?: boolean | null }
+  | { type: "set_input_mode"; background: boolean }
   | { type: "mouse_move"; x: number; y: number }
   | { type: "mouse_button"; button: MouseButtonName; pressed: boolean; x: number; y: number }
   | { type: "wheel"; delta: number; x: number; y: number }
