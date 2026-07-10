@@ -1,10 +1,11 @@
 //! Serveur HTTP + WebSocket (axum). Une connexion = une session (un client,
 //! une fenêtre capturée à la fois — suffisant pour le POC).
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::response::Response;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
@@ -48,11 +49,16 @@ impl Session {
     }
 }
 
-pub async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+pub async fn ws_handler(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_socket(socket, state, addr))
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState) {
+async fn handle_socket(socket: WebSocket, state: AppState, addr: SocketAddr) {
+    tracing::info!("WebSocket client connected: {addr}");
     let (sink, mut stream) = socket.split();
     let sender: Sender = Arc::new(Mutex::new(sink));
     let mut session = Session::default();
@@ -80,7 +86,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 
     session.stop_capture();
-    tracing::info!("connexion fermée");
+    tracing::info!("WebSocket client disconnected: {addr}");
 }
 
 async fn send_json(sender: &Sender, msg: &ServerMessage) {
@@ -92,15 +98,16 @@ async fn send_json(sender: &Sender, msg: &ServerMessage) {
 async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Sender, state: &AppState) {
     match msg {
         ClientMessage::ListWindows => {
-            let locked_apps = {
+            let (locked_apps, allow_virtual_desktop) = {
                 let cfg_opt = state.config.lock().unwrap();
                 if let Some(cfg_mutex) = &*cfg_opt {
-                    cfg_mutex.lock().unwrap().locked_apps.clone()
+                    let cfg = cfg_mutex.lock().unwrap();
+                    (cfg.locked_apps.clone(), cfg.allow_virtual_desktop)
                 } else {
-                    Vec::new()
+                    (Vec::new(), false)
                 }
             };
-            match capture::list_windows(&locked_apps) {
+            match capture::list_windows(&locked_apps, allow_virtual_desktop) {
                 Ok(items) => send_json(sender, &ServerMessage::Windows { items }).await,
                 Err(e) => {
                     send_json(sender, &ServerMessage::Error { message: e.to_string() }).await
@@ -108,7 +115,17 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
             }
         }
 
+        ClientMessage::FocusWindow => {
+            if let Some(id) = session.hwnd {
+                input::focus_window(id);
+            }
+        }
+
         ClientMessage::SelectWindow { id, pin, quality, scale, show_cursor } => {
+            tracing::info!(
+                "stream requested: window {id} (quality={:?}, scale={:?}, cursor={:?})",
+                quality, scale, show_cursor
+            );
             let is_locked = {
                 let cfg_opt = state.config.lock().unwrap();
                 if let Some(cfg_mutex) = &*cfg_opt {
@@ -215,7 +232,7 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
                     input::key_bg(hwnd, &code, pressed);
                 }
             } else {
-                input::key(&code, pressed);
+                input::key(session.hwnd, &code, pressed);
             }
         }
 
@@ -307,5 +324,28 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
                 .await
             }
         },
+        ClientMessage::LaunchApp { command } => {
+            #[cfg(windows)]
+            {
+                if let Some(_hdesk) = crate::input::desktop::get_or_create_virtual_desktop() {
+                    let arguments: Vec<String> = Vec::new();
+                    match crate::input::desktop::spawn_on_desktop(&command, &arguments, "WinSta0\\appMirror_Desktop") {
+                        Ok(pid) => {
+                            send_json(sender, &ServerMessage::Notice { message: format!("Application lancée sur le bureau virtuel (PID: {})", pid) }).await;
+                        }
+                        Err(e) => {
+                            send_json(sender, &ServerMessage::Error { message: format!("Échec du lancement : {}", e) }).await;
+                        }
+                    }
+                } else {
+                    send_json(sender, &ServerMessage::Error { message: "Impossible de créer/ouvrir le bureau virtuel".to_string() }).await;
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = command;
+                send_json(sender, &ServerMessage::Error { message: "Bureau virtuel supporté uniquement sur Windows".to_string() }).await;
+            }
+        }
     }
 }

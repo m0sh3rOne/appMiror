@@ -49,8 +49,27 @@ fn get_process_name(hwnd: isize) -> Option<String> {
     }
 }
 
-pub fn list_windows(locked_apps: &[String]) -> anyhow::Result<Vec<WindowInfo>> {
+pub fn list_windows(locked_apps: &[String], allow_virtual_desktop: bool) -> anyhow::Result<Vec<WindowInfo>> {
     let mut out = Vec::new();
+    
+    // Énumère sur le bureau actif
+    let _ = enumerate_desktop_windows(&mut out, locked_apps);
+    
+    // Énumère sur le bureau virtuel si autorisé et existant
+    if allow_virtual_desktop {
+        if let Some(hdesk) = crate::input::desktop::get_or_create_virtual_desktop() {
+            let mut v_out = Vec::new();
+            crate::input::desktop::run_on_desktop(hdesk, || {
+                let _ = enumerate_desktop_windows(&mut v_out, locked_apps);
+            });
+            out.extend(v_out);
+        }
+    }
+    
+    Ok(out)
+}
+
+fn enumerate_desktop_windows(out: &mut Vec<WindowInfo>, locked_apps: &[String]) -> anyhow::Result<()> {
     for w in Window::enumerate().map_err(|e| anyhow::anyhow!("enumerate: {e:?}"))? {
         let title = w.title().unwrap_or_default();
         if title.trim().is_empty() {
@@ -83,7 +102,7 @@ pub fn list_windows(locked_apps: &[String]) -> anyhow::Result<Vec<WindowInfo>> {
             locked,
         });
     }
-    Ok(out)
+    Ok(())
 }
 
 fn downscale_rgba(rgba: &[u8], w: u32, h: u32, scale: f32) -> (Vec<u8>, u32, u32) {

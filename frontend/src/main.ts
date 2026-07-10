@@ -4,7 +4,7 @@
 import { InputController } from "./input";
 import { StreamClient } from "./stream";
 import { Annotator, type Tool } from "./annotate";
-import { Rulers } from "./rulers";
+import { Rulers, RULER_THICKNESS } from "./rulers";
 import type { ServerMessage } from "./protocol";
 
 const canvas = document.getElementById("screen") as HTMLCanvasElement;
@@ -26,6 +26,16 @@ const qualitySelect = document.getElementById("qualitySelect") as HTMLSelectElem
 const showCursorInput = document.getElementById("showCursor") as HTMLInputElement;
 const bgInput = document.getElementById("bgInput") as HTMLInputElement;
 const virtualCursor = document.getElementById("virtualCursor") as HTMLDivElement;
+const focusWindowBtn = document.getElementById("focusWindow") as HTMLButtonElement;
+const launchCmdInput = document.getElementById("launchCmd") as HTMLInputElement;
+const btnLaunchVirtual = document.getElementById("btnLaunchVirtual") as HTMLButtonElement;
+
+const zonesModal = document.getElementById("zonesModal") as HTMLDivElement;
+const zonesJsonArea = document.getElementById("zonesJsonArea") as HTMLTextAreaElement;
+const zonesClose = document.getElementById("zonesClose") as HTMLButtonElement;
+const zonesCopy = document.getElementById("zonesCopy") as HTMLButtonElement;
+const zonesImport = document.getElementById("zonesImport") as HTMLButtonElement;
+const zonesError = document.getElementById("zonesError") as HTMLDivElement;
 
 let pendingWindowId: number | null = null;
 // Dernière sélection (pour re-streamer quand une option de capture change).
@@ -148,8 +158,12 @@ function layout() {
   // -26 = padding du <main> (2×12px) + bordure de #stage (2×1px). Sans réserver
   // la bordure, le mode "Fit" déborde de 2px et fait apparaître une barre de
   // défilement fantôme (le <main> est en overflow: auto).
-  const availW = Math.max(50, viewport.clientWidth - 26);
-  const availH = Math.max(50, viewport.clientHeight - 26);
+  // Quand l'outil règle est actif, #stage porte une marge (gouttière) en haut et
+  // à gauche pour loger les règles À L'EXTÉRIEUR de la vidéo : on la déduit de
+  // l'espace disponible pour que l'ensemble tienne sans débordement.
+  const rulerGutter = stage.dataset.tool === "ruler" ? RULER_THICKNESS : 0;
+  const availW = Math.max(50, viewport.clientWidth - 26 - rulerGutter);
+  const availH = Math.max(50, viewport.clientHeight - 26 - rulerGutter);
   let scale: number;
   switch (fitMode) {
     case "fill":
@@ -269,6 +283,8 @@ function setTool(t: Tool) {
   stage.dataset.tool = t;
   slicesJsonBtn.hidden = t !== "slice";
   for (const b of toolButtons) b.classList.toggle("active", b.dataset.tool === t);
+  // La gouttière des règles change l'espace dispo : on recalcule la mise en page.
+  layout();
   if (t === "cursor") canvas.focus();
   else canvas.blur();
   updateVirtualCursor();
@@ -282,13 +298,32 @@ const colorInput = document.getElementById("annColor") as HTMLInputElement;
 const widthInput = document.getElementById("annWidth") as HTMLInputElement;
 const widthVal = document.getElementById("annWidthVal") as HTMLSpanElement;
 const fillInput = document.getElementById("annFill") as HTMLInputElement;
+const fillOpacityInput = document.getElementById("annFillOpacity") as HTMLInputElement;
+const fillOpacityVal = document.getElementById("annFillOpacityVal") as HTMLSpanElement;
 
 colorInput.addEventListener("input", () => annot.setColor(colorInput.value));
 widthInput.addEventListener("input", () => {
   widthVal.textContent = widthInput.value;
   annot.setStrokeWidth(Number(widthInput.value));
 });
-fillInput.addEventListener("change", () => annot.setFill(fillInput.checked));
+
+// Le curseur d'opacité ne concerne que le remplissage : on le grise tant que
+// "Fill" est décoché pour montrer la dépendance.
+function syncFillOpacityEnabled() {
+  fillOpacityInput.disabled = !fillInput.checked;
+}
+fillInput.addEventListener("change", () => {
+  annot.setFill(fillInput.checked);
+  syncFillOpacityEnabled();
+});
+fillOpacityInput.addEventListener("input", () => {
+  const pct = Number(fillOpacityInput.value);
+  fillOpacityVal.textContent = `${pct}%`;
+  annot.setFillOpacity(pct / 100);
+});
+// État initial : slider aligné sur la valeur par défaut de l'Annotator (30%).
+annot.setFillOpacity(Number(fillOpacityInput.value) / 100);
+syncFillOpacityEnabled();
 
 (document.getElementById("undoBtn") as HTMLButtonElement).addEventListener("click", () =>
   annot.undo(),
@@ -302,16 +337,39 @@ fillInput.addEventListener("change", () => annot.setFill(fillInput.checked));
 (document.getElementById("exportBtn") as HTMLButtonElement).addEventListener("click", () => {
   void annot.exportPng(canvas).catch((e) => (statusEl.textContent = `export: ${e}`));
 });
-slicesJsonBtn.addEventListener("click", async () => {
-  if (annot.sliceCount() === 0) {
-    statusEl.textContent = "no slice zones";
-    return;
-  }
+slicesJsonBtn.addEventListener("click", () => {
+  zonesModal.style.display = "flex";
+  zonesJsonArea.value = annot.slicesJson();
+  zonesError.textContent = "";
+  zonesJsonArea.focus();
+});
+
+zonesClose.addEventListener("click", () => {
+  zonesModal.style.display = "none";
+});
+
+zonesCopy.addEventListener("click", async () => {
   try {
-    await navigator.clipboard.writeText(annot.slicesJson());
-    statusEl.textContent = `${annot.sliceCount()} zone(s) copied as JSON (native px)`;
+    await navigator.clipboard.writeText(zonesJsonArea.value);
+    statusEl.textContent = "Slice zones JSON copied to clipboard!";
   } catch {
-    statusEl.textContent = "clipboard blocked by the browser";
+    zonesError.textContent = "Failed to copy to clipboard";
+  }
+});
+
+zonesImport.addEventListener("click", () => {
+  try {
+    annot.importSlicesJson(zonesJsonArea.value);
+    zonesModal.style.display = "none";
+    statusEl.textContent = "Slice zones imported successfully!";
+  } catch (e: any) {
+    zonesError.textContent = e.message;
+  }
+});
+
+zonesModal.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    zonesModal.style.display = "none";
   }
 });
 
@@ -386,10 +444,21 @@ shotBtn.addEventListener("click", () =>
   stream.send({ type: "screenshot", dir: saveDir() }),
 );
 
+focusWindowBtn.addEventListener("click", () => {
+  stream.send({ type: "focus_window" });
+});
+
 recBtn.addEventListener("click", () => {
   if (recording) {
     stream.send({ type: "stop_recording" });
   } else {
     stream.send({ type: "start_recording", dir: saveDir(), fps: 10 });
+  }
+});
+
+btnLaunchVirtual.addEventListener("click", () => {
+  const command = launchCmdInput.value.trim();
+  if (command) {
+    stream.send({ type: "launch_app", command });
   }
 });

@@ -8,6 +8,9 @@ use crate::protocol::MouseButton;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(windows)]
+pub mod desktop;
+
 #[cfg(target_os = "linux")]
 mod linux;
 
@@ -58,11 +61,11 @@ pub fn wheel(hwnd: isize, delta: i32, x: i32, y: i32) {
     let _ = (hwnd, delta, x, y);
 }
 
-pub fn key(code: &str, pressed: bool) {
+pub fn key(hwnd: Option<isize>, code: &str, pressed: bool) {
     #[cfg(any(windows, target_os = "linux"))]
-    imp::key(code, pressed);
+    imp::key(hwnd, code, pressed);
     #[cfg(not(any(windows, target_os = "linux")))]
-    let _ = (code, pressed);
+    let _ = (hwnd, code, pressed);
 }
 
 // ── Injection en arrière-plan (sans focus) ──────────────────────────────────

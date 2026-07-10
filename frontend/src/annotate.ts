@@ -37,6 +37,7 @@ interface BoxShape extends BaseShape {
   w: number;
   h: number;
   fill: boolean;
+  fillOpacity: number; // opacité du remplissage, 0..1
 }
 interface LineShape extends BaseShape {
   kind: "line" | "arrow";
@@ -159,6 +160,7 @@ export class Annotator {
   private color = "#ff3355";
   private strokeWidth = 4;
   private fillShapes = false;
+  private fillOpacity = 0.3; // opacité du remplissage des formes, 0..1
 
   private nativeW = 1280;
   private nativeH = 720;
@@ -235,6 +237,10 @@ export class Annotator {
   setFill(f: boolean) {
     this.fillShapes = f;
   }
+  /** Opacité du remplissage (0..1) pour les prochaines formes. */
+  setFillOpacity(o: number) {
+    this.fillOpacity = Math.max(0, Math.min(1, o));
+  }
 
   /** Résolution native de la source. Un changement efface les annotations
    *  (elles étaient calées sur l'ancienne fenêtre) — récupérables via undo. */
@@ -309,6 +315,49 @@ export class Annotator {
       h: Math.round(s.h),
     }));
     return JSON.stringify(zones, null, 2);
+  }
+
+  /** Importe des zones de découpe depuis un JSON et redessine l'overlay. */
+  importSlicesJson(jsonStr: string) {
+    this.commitEditor();
+    try {
+      const parsed = JSON.parse(jsonStr);
+      if (!Array.isArray(parsed)) {
+        throw new Error("JSON must be an array of slice objects");
+      }
+      
+      const newSlices: Slice[] = [];
+      let maxId = 0;
+      for (const s of this.model.shapes) if (s.id > maxId) maxId = s.id;
+      for (const s of this.model.slices) if (s.id > maxId) maxId = s.id;
+      for (const g of this.model.guides) if (g.id > maxId) maxId = g.id;
+
+      for (const item of parsed) {
+        if (
+          typeof item.x !== "number" ||
+          typeof item.y !== "number" ||
+          typeof item.w !== "number" ||
+          typeof item.h !== "number"
+        ) {
+          throw new Error("Each slice must have numeric x, y, w, and h properties");
+        }
+        maxId++;
+        newSlices.push({
+          id: maxId,
+          x: item.x,
+          y: item.y,
+          w: item.w,
+          h: item.h
+        });
+      }
+
+      this.pushHistory();
+      this.model.slices = newSlices;
+      this.render();
+      this.onStatus(`imported ${newSlices.length} slice zone(s)`);
+    } catch (e: any) {
+      throw new Error(`Import failed: ${e.message}`);
+    }
   }
 
   sliceCount(): number {
@@ -421,6 +470,7 @@ export class Annotator {
           w: 0,
           h: 0,
           fill: this.fillShapes,
+          fillOpacity: this.fillOpacity,
         };
         this.drag = { t: "shape", ox: p.x, oy: p.y, shape };
         break;
@@ -952,11 +1002,11 @@ export class Annotator {
   }
 
   private renderGuides() {
-    this.gGuides.setAttribute(
-      "pointer-events",
-      this.tool === "ruler" ? "visiblePainted" : "none",
+    const interactive = this.tool === "ruler";
+    this.gGuides.setAttribute("pointer-events", interactive ? "visiblePainted" : "none");
+    this.gGuides.replaceChildren(
+      ...this.model.guides.map((g) => this.guideNode(g, interactive)),
     );
-    this.gGuides.replaceChildren(...this.model.guides.map((g) => this.guideNode(g)));
   }
 
   private renderDraft() {
@@ -1009,7 +1059,7 @@ export class Annotator {
             y: r1(r.y),
             width: r1(r.w),
             height: r1(r.h),
-            ...(s.fill ? { fill: s.color, "fill-opacity": 0.28 } : {}),
+            ...(s.fill ? { fill: s.color, "fill-opacity": s.fillOpacity } : {}),
           }),
         );
         break;
@@ -1023,7 +1073,7 @@ export class Annotator {
             cy: r1(r.y + r.h / 2),
             rx: r1(r.w / 2),
             ry: r1(r.h / 2),
-            ...(s.fill ? { fill: s.color, "fill-opacity": 0.28 } : {}),
+            ...(s.fill ? { fill: s.color, "fill-opacity": s.fillOpacity } : {}),
           }),
         );
         break;
@@ -1178,7 +1228,7 @@ export class Annotator {
     return g;
   }
 
-  private guideNode(gd: Guide): SVGElement {
+  private guideNode(gd: Guide, interactive = true): SVGElement {
     const g = el("g", { "data-guide": gd.id });
     const u = (n: number) => this.u(n);
     const vert = gd.axis === "x";
@@ -1188,12 +1238,15 @@ export class Annotator {
       x2: vert ? r1(gd.pos) : this.nativeW,
       y2: vert ? this.nativeH : r1(gd.pos),
     };
-    // Bande invisible élargie pour faciliter la saisie du guide.
+    // Bande invisible élargie pour faciliter la saisie du guide. Son
+    // `pointer-events: stroke` OUTREPASSE le `none` du groupe parent : on ne
+    // l'active donc qu'en mode règle, sinon le guide resterait cliquable (et
+    // intercepterait les clics destinés aux slices, qu'il recouvre).
     const hit = el("line", {
       ...line,
       stroke: "rgba(0,0,0,0)",
       "stroke-width": u(9),
-      "pointer-events": "stroke",
+      "pointer-events": interactive ? "stroke" : "none",
     });
     (hit as SVGElement & { style: CSSStyleDeclaration }).style.cursor = vert ? "col-resize" : "row-resize";
     g.appendChild(hit);

@@ -5,28 +5,36 @@ mod capture;
 mod config;
 mod gui;
 mod input;
+mod logbuf;
 mod mcp;
 mod protocol;
 mod recorder;
 mod server;
 
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use axum::routing::{get, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
+use tracing_subscriber::prelude::*;
 
 use crate::app::AppState;
+use crate::logbuf::{LogBuffer, LogLayer};
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,appmirror_backend=debug".into()),
-        )
+    // Tampon partagé alimenté par une couche `tracing` dédiée, en plus de la
+    // sortie stdout habituelle. La GUI l'affiche dans sa section « Network Logs ».
+    let logs = LogBuffer::new(500);
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,appmirror_backend=debug".into());
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(LogLayer::new(logs.clone()))
         .init();
 
     let config = config::AppConfig::load();
-    let state = AppState::new();
+    let state = AppState::new(logs);
 
     // Check for --headless flag
     let args: Vec<String> = std::env::args().collect();
@@ -50,7 +58,11 @@ fn main() -> anyhow::Result<()> {
             let addr = format!("0.0.0.0:{}", config.server_port);
             let listener = tokio::net::TcpListener::bind(&addr).await?;
             tracing::info!("appMirror backend (headless) listening on http://{} (ws: /ws)", addr);
-            axum::serve(listener, app).await?;
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await?;
             Ok::<(), anyhow::Error>(())
         })?;
     } else {

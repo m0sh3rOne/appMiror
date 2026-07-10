@@ -21,22 +21,78 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEINPUT, MOUSE_EVENT_FLAGS, MapVirtualKeyW, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
 };
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::System::StationsAndDesktops::{GetThreadDesktop, HDESK, SetThreadDesktop};
 use windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
 use windows::Win32::UI::WindowsAndMessaging::{
-    ChildWindowFromPointEx, GetClientRect, GetGUIThreadInfo, GetSystemMetrics,
-    GetWindowThreadProcessId, IsChild, PostMessageW, SetForegroundWindow, CWP_SKIPDISABLED,
-    CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GUITHREADINFO, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    BringWindowToTop, ChildWindowFromPointEx, GetClientRect, GetForegroundWindow, GetGUIThreadInfo,
+    GetSystemMetrics, GetWindowThreadProcessId, IsChild, IsIconic, PostMessageW, SetForegroundWindow,
+    ShowWindow, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GUITHREADINFO,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
 
 fn as_hwnd(id: isize) -> HWND {
     HWND(id as *mut core::ffi::c_void)
 }
 
+struct DesktopGuard {
+    old_desk: Option<HDESK>,
+}
+
+impl DesktopGuard {
+    fn new(target_hwnd: HWND) -> Self {
+        unsafe {
+            let tid = GetWindowThreadProcessId(target_hwnd, None);
+            if tid != 0 {
+                let window_desk = GetThreadDesktop(tid).ok();
+                let cur_tid = GetCurrentThreadId();
+                let cur_desk = GetThreadDesktop(cur_tid).ok();
+                if let (Some(w_desk), Some(c_desk)) = (window_desk, cur_desk) {
+                    if !w_desk.is_invalid() && w_desk != c_desk {
+                        if SetThreadDesktop(w_desk).is_ok() {
+                            return Self { old_desk: Some(c_desk) };
+                        }
+                    }
+                }
+            }
+        }
+        Self { old_desk: None }
+    }
+}
+
+impl Drop for DesktopGuard {
+    fn drop(&mut self) {
+        if let Some(old) = self.old_desk {
+            unsafe {
+                let _ = SetThreadDesktop(old);
+            }
+        }
+    }
+}
+
 pub fn focus_window(hwnd: isize) {
+    let target = as_hwnd(hwnd);
+    let _guard = DesktopGuard::new(target);
     unsafe {
-        let _ = SetForegroundWindow(as_hwnd(hwnd));
+        // 1) Restaure la fenêtre si elle est minimisée : WGC ne capture pas une
+        //    fenêtre iconifiée (frames vides / taille client aberrante « 148×22 »).
+        if IsIconic(target).as_bool() {
+            let _ = ShowWindow(target, SW_RESTORE);
+        }
+        // 2) `SetForegroundWindow` échoue souvent depuis un thread en arrière-plan
+        //    (foreground-lock de Windows). On s'attache temporairement à la file
+        //    d'entrée du thread au premier plan pour lever la restriction — c'est
+        //    la parade standard.
+        let fg_tid = GetWindowThreadProcessId(GetForegroundWindow(), None);
+        let our_tid = GetCurrentThreadId();
+        let attached =
+            fg_tid != 0 && fg_tid != our_tid && AttachThreadInput(our_tid, fg_tid, true).as_bool();
+        let _ = SetForegroundWindow(target);
+        let _ = BringWindowToTop(target);
+        if attached {
+            let _ = AttachThreadInput(our_tid, fg_tid, false);
+        }
     }
 }
 
@@ -83,7 +139,9 @@ fn send_mouse(flags: MOUSE_EVENT_FLAGS, abs_x: i32, abs_y: i32, data: i32) {
 }
 
 pub fn mouse_move(hwnd: isize, x: i32, y: i32) {
-    let (ax, ay) = client_to_abs(as_hwnd(hwnd), x, y);
+    let target = as_hwnd(hwnd);
+    let _guard = DesktopGuard::new(target);
+    let (ax, ay) = client_to_abs(target, x, y);
     send_mouse(
         MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
         ax,
@@ -93,7 +151,9 @@ pub fn mouse_move(hwnd: isize, x: i32, y: i32) {
 }
 
 pub fn mouse_button(hwnd: isize, button: MouseButton, pressed: bool, x: i32, y: i32) {
-    let (ax, ay) = client_to_abs(as_hwnd(hwnd), x, y);
+    let target = as_hwnd(hwnd);
+    let _guard = DesktopGuard::new(target);
+    let (ax, ay) = client_to_abs(target, x, y);
     let btn = match (button, pressed) {
         (MouseButton::Left, true) => MOUSEEVENTF_LEFTDOWN,
         (MouseButton::Left, false) => MOUSEEVENTF_LEFTUP,
@@ -112,7 +172,9 @@ pub fn mouse_button(hwnd: isize, button: MouseButton, pressed: bool, x: i32, y: 
 }
 
 pub fn wheel(hwnd: isize, delta: i32, x: i32, y: i32) {
-    let (ax, ay) = client_to_abs(as_hwnd(hwnd), x, y);
+    let target = as_hwnd(hwnd);
+    let _guard = DesktopGuard::new(target);
+    let (ax, ay) = client_to_abs(target, x, y);
     // WHEEL_DELTA = 120 par cran.
     send_mouse(
         MOUSEEVENTF_WHEEL | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
@@ -160,7 +222,8 @@ fn code_to_vk(code: &str) -> Option<u16> {
     Some(vk)
 }
 
-pub fn key(code: &str, pressed: bool) {
+pub fn key(hwnd: Option<isize>, code: &str, pressed: bool) {
+    let _guard = hwnd.map(|h| DesktopGuard::new(as_hwnd(h)));
     let Some(vk) = code_to_vk(code) else {
         tracing::debug!("touche non mappée: {code}");
         return;

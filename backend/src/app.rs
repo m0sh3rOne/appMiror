@@ -33,10 +33,12 @@ pub struct AppState {
     pub mcp_sessions: McpSessions,
     /// Configuration pour la sécurité PIN / processus verrouillés.
     pub config: Arc<Mutex<Option<Arc<Mutex<crate::config::AppConfig>>>>>,
+    /// Tampon de logs réseau affiché par la GUI.
+    pub logs: crate::logbuf::LogBuffer,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(logs: crate::logbuf::LogBuffer) -> Self {
         // On garde uniquement l'émetteur ; les WebSocket s'abonnent à la demande.
         let (notices, _) = broadcast::channel(32);
         Self {
@@ -44,6 +46,7 @@ impl AppState {
             notices,
             mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(Mutex::new(None)),
+            logs,
         }
     }
 

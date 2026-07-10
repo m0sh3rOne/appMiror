@@ -4,6 +4,7 @@ export type MouseButtonName = "left" | "right" | "middle";
 
 export type ClientMessage =
   | { type: "list_windows" }
+  | { type: "focus_window" }
   | { type: "select_window"; id: number; pin?: string | null; quality?: number | null; scale?: number | null; show_cursor?: boolean | null }
   | { type: "set_input_mode"; background: boolean }
   | { type: "mouse_move"; x: number; y: number }
@@ -12,7 +13,8 @@ export type ClientMessage =
   | { type: "key"; code: string; pressed: boolean }
   | { type: "screenshot"; dir?: string | null }
   | { type: "start_recording"; dir?: string | null; fps?: number | null }
-  | { type: "stop_recording" };
+  | { type: "stop_recording" }
+  | { type: "launch_app"; command: string };
 
 export interface WindowInfo {
   id: number;

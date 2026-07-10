@@ -8,6 +8,7 @@ pub struct AppConfig {
     pub locked_apps: Vec<String>,
     pub launcher_locked: bool,
     pub server_port: u16,
+    pub allow_virtual_desktop: bool,
 }
 
 impl Default for AppConfig {
@@ -17,6 +18,7 @@ impl Default for AppConfig {
             locked_apps: Vec::new(),
             launcher_locked: false,
             server_port: 8080,
+            allow_virtual_desktop: false,
         }
     }
 }

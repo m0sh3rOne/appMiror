@@ -64,6 +64,7 @@ pub struct GuiApp {
     app_state: crate::app::AppState,
     port_input: String,
     status_message: String,
+    logs_autoscroll: bool,
 }
 
 impl GuiApp {
@@ -92,6 +93,7 @@ impl GuiApp {
             app_state,
             port_input,
             status_message: "Server is stopped.".to_string(),
+            logs_autoscroll: true,
         }
     }
 
@@ -127,11 +129,14 @@ impl GuiApp {
                 let addr = format!("0.0.0.0:{}", port);
                 if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
                     tracing::info!("appMirror backend listening on http://{}", addr);
-                    let _ = axum::serve(listener, app)
-                        .with_graceful_shutdown(async {
-                            let _ = shutdown_rx.await;
-                        })
-                        .await;
+                    let _ = axum::serve(
+                        listener,
+                        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    )
+                    .with_graceful_shutdown(async {
+                        let _ = shutdown_rx.await;
+                    })
+                    .await;
                 } else {
                     tracing::error!("Failed to bind to {}", addr);
                 }
@@ -282,6 +287,52 @@ impl eframe::App for GuiApp {
 
             // Tabs for settings and manual
             egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::CollapsingHeader::new("📜 Network Logs")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} entries", self.app_state.logs.len()));
+                            if ui.button("🗑 Clear").clicked() {
+                                self.app_state.logs.clear();
+                            }
+                            ui.checkbox(&mut self.logs_autoscroll, "Auto-scroll");
+                        });
+                        ui.label(
+                            egui::RichText::new("Clients, requests and MCP exchanges.")
+                                .weak()
+                                .small(),
+                        );
+                        egui::ScrollArea::vertical()
+                            .id_source("network_logs_scroll")
+                            .max_height(220.0)
+                            .auto_shrink([false, false])
+                            .stick_to_bottom(self.logs_autoscroll)
+                            .show(ui, |ui| {
+                                let entries = self.app_state.logs.snapshot();
+                                if entries.is_empty() {
+                                    ui.weak(
+                                        "No network activity yet — connect a web client or an MCP agent.",
+                                    );
+                                }
+                                for e in &entries {
+                                    let color = match e.level {
+                                        tracing::Level::ERROR => egui::Color32::from_rgb(231, 76, 60),
+                                        tracing::Level::WARN => egui::Color32::from_rgb(214, 153, 33),
+                                        _ => ui.visuals().text_color(),
+                                    };
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        ui.monospace(egui::RichText::new(&e.time).weak());
+                                        ui.monospace(
+                                            egui::RichText::new(format!("[{}]", e.source))
+                                                .color(egui::Color32::from_rgb(90, 140, 200)),
+                                        );
+                                        ui.monospace(egui::RichText::new(&e.message).color(color));
+                                    });
+                                }
+                            });
+                    });
+
                 ui.collapsing("⚙ Settings & Security Locks", |ui| {
                     let mut config_changed = false;
                     let mut config = self.config.lock().unwrap().clone();
@@ -305,6 +356,10 @@ impl eframe::App for GuiApp {
                     });
 
                     if ui.checkbox(&mut config.launcher_locked, "Require PIN to open launcher GUI").changed() {
+                        config_changed = true;
+                    }
+
+                    if ui.checkbox(&mut config.allow_virtual_desktop, "Allow Virtual Desktops (run isolated apps)").changed() {
                         config_changed = true;
                     }
 
@@ -369,14 +424,16 @@ impl eframe::App for GuiApp {
                         ui.add_space(5.0);
                         ui.heading("Available Tools:");
                         ui.label("  • list_windows: Scan open desktop windows.");
-                        ui.label("  • attach_to_window: Target a window by ID & bring it to foreground.");
-                        ui.label("  • inject_input: Simulate keyboard (keys/text) & mouse (clicks/moves/wheel) actions.");
+                        ui.label("  • attach_to_window: Target a window by ID; restores it if minimized & brings it to foreground.");
+                        ui.label("  • focus_window: Re-restore & re-focus the attached window (recover from lost focus / minimized state).");
+                        ui.label("  • inject_input: Keyboard (keys/text) & mouse — action: mouse_move, button, click, double_click, drag (x,y → to_x,to_y), wheel.");
                         ui.label("  • get_window_screenshot: Capture real-time base64 JPEG screen feedback.");
                         ui.label("  • inspect_ui_elements: List child window controls with text & normalized coordinates.");
                         ui.add_space(5.0);
                         ui.heading("AI Developer Tips:");
                         ui.label("  • AZERTY keyboards: Digits require holding down ShiftLeft.");
                         ui.label("  • UWP/DirectX Apps: These use custom drawing (no child HWNDs). Use get_window_screenshot for visual coordinate mapping.");
+                        ui.label("  • Background Input: UWP (e.g. Calculator) and Chromium-based apps (e.g. Chrome, Discord) ignore PostMessage when unfocused. Disable 'Background' to control them.");
                         ui.label("  • Coordinates: Center points are normalized (x,y) ∈ [0,1] relative to the target client area.");
                         ui.add_space(5.0);
                         ui.label("- To configure Antigravity IDE, add this to your mcp_config.json:");
@@ -386,5 +443,9 @@ impl eframe::App for GuiApp {
                 });
             });
         });
+
+        // Rafraîchit périodiquement pour afficher les nouveaux logs poussés depuis
+        // les threads réseau (egui ne repeint sinon que sur interaction).
+        ctx.request_repaint_after(std::time::Duration::from_millis(750));
     }
 }

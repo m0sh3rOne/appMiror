@@ -89,10 +89,12 @@ fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["mouse_move", "button", "click", "wheel", "key", "text"] },
-                    "x": { "type": "number", "description": "Position X normalisée 0..1." },
-                    "y": { "type": "number", "description": "Position Y normalisée 0..1." },
-                    "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Bouton pour action=button/click." },
+                    "action": { "type": "string", "enum": ["mouse_move", "button", "click", "double_click", "drag", "wheel", "key", "text"] },
+                    "x": { "type": "number", "description": "Position X normalisée 0..1 (origine du drag)." },
+                    "y": { "type": "number", "description": "Position Y normalisée 0..1 (origine du drag)." },
+                    "to_x": { "type": "number", "description": "Destination X normalisée 0..1 (action=drag)." },
+                    "to_y": { "type": "number", "description": "Destination Y normalisée 0..1 (action=drag)." },
+                    "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Bouton pour action=button/click/double_click/drag." },
                     "pressed": { "type": "boolean", "description": "action=button/key : true=appui, false=relâche." },
                     "delta": { "type": "integer", "description": "Crans de molette (action=wheel), positif=haut." },
                     "code": { "type": "string", "description": "KeyboardEvent.code (action=key), ex: KeyA, Enter." },
@@ -101,6 +103,11 @@ fn tool_definitions() -> Value {
                 "required": ["action"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "focus_window",
+            "description": "Restaure (si minimisée) et met au premier plan la fenêtre attachée. À utiliser si une capture échoue ou si le focus a été perdu.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         },
         {
             "name": "get_window_screenshot",
@@ -142,9 +149,10 @@ async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> 
     let outcome: Result<Value, String> = match name {
         "list_windows" => tool_list_windows(state).map(|t| json!([ { "type": "text", "text": t } ])),
         "attach_to_window" => tool_attach(args, state).map(|t| json!([ { "type": "text", "text": t } ])),
+        "focus_window" => tool_focus(state).map(|t| json!([ { "type": "text", "text": t } ])),
         "inject_input" => tool_inject(args, state).map(|t| json!([ { "type": "text", "text": t } ])),
         "get_window_screenshot" => tool_screenshot(state).await.map(|b64| json!([ { "type": "image", "data": b64, "mimeType": "image/jpeg" } ])),
-        "launch_app" => tool_launch(args).map(|t| json!([ { "type": "text", "text": t } ])),
+        "launch_app" => tool_launch(args, state).map(|t| json!([ { "type": "text", "text": t } ])),
         "inspect_ui_elements" => tool_inspect(state).map(|v| json!([ { "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() } ])),
         other => return Err(McpError { code: -32602, message: format!("outil inconnu: {other}") }),
     };
@@ -162,15 +170,16 @@ async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> 
 }
 
 fn tool_list_windows(state: &AppState) -> Result<String, String> {
-    let locked_apps = {
+    let (locked_apps, allow_virtual) = {
         let cfg_opt = state.config.lock().unwrap();
         if let Some(cfg_mutex) = &*cfg_opt {
-            cfg_mutex.lock().unwrap().locked_apps.clone()
+            let cfg = cfg_mutex.lock().unwrap();
+            (cfg.locked_apps.clone(), cfg.allow_virtual_desktop)
         } else {
-            Vec::new()
+            (Vec::new(), false)
         }
     };
-    let items = capture::list_windows(&locked_apps).map_err(|e| format!("échec list_windows: {e}"))?;
+    let items = capture::list_windows(&locked_apps, allow_virtual).map_err(|e| format!("échec list_windows: {e}"))?;
     let windows: Vec<Value> = items
         .iter()
         .map(|w| json!({ "id": w.id, "title": w.title, "locked": w.locked }))
@@ -200,6 +209,16 @@ fn tool_attach(args: Value, state: &AppState) -> Result<String, String> {
     // dans l'UI, donc en anglais).
     let _ = state.notices.send(format!("MCP agent attached to window {id} ({width}×{height})"));
     Ok(format!("attached to window {id} ({width}×{height})"))
+}
+
+/// Restaure et met au premier plan la fenêtre attachée (récupération de focus).
+fn tool_focus(state: &AppState) -> Result<String, String> {
+    let target = *state.attached.lock().unwrap();
+    let Some(target) = target else {
+        return Err("aucune fenêtre attachée (appeler attach_to_window d'abord)".into());
+    };
+    input::focus_window(target.id);
+    Ok(format!("fenêtre {} restaurée et mise au premier plan", target.id))
 }
 
 /// Dénormalise (x,y) ∈ [0,1] vers des pixels client de la fenêtre attachée.
@@ -237,6 +256,34 @@ fn tool_inject(args: Value, state: &AppState) -> Result<String, String> {
             input::mouse_button(target.id, button, false, x, y);
             format!("click {button:?} @({x},{y})")
         }
+        InjectAction::DoubleClick => {
+            let (x, y) = denorm(&target, inj.x, inj.y);
+            let button = inj.button.unwrap_or(MouseButton::Left);
+            for _ in 0..2 {
+                input::mouse_button(target.id, button, true, x, y);
+                input::mouse_button(target.id, button, false, x, y);
+            }
+            format!("double_click {button:?} @({x},{y})")
+        }
+        InjectAction::Drag => {
+            let (x1, y1) = denorm(&target, inj.x, inj.y);
+            let (x2, y2) = denorm(&target, inj.to_x, inj.to_y);
+            let button = inj.button.unwrap_or(MouseButton::Left);
+            // Vrai geste : appui, déplacements interpolés (avec un court délai pour
+            // que la cible enregistre le drag), puis relâche.
+            input::mouse_move(target.id, x1, y1);
+            input::mouse_button(target.id, button, true, x1, y1);
+            const STEPS: i32 = 12;
+            for i in 1..=STEPS {
+                let t = i as f64 / STEPS as f64;
+                let ix = (x1 as f64 + (x2 - x1) as f64 * t).round() as i32;
+                let iy = (y1 as f64 + (y2 - y1) as f64 * t).round() as i32;
+                input::mouse_move(target.id, ix, iy);
+                std::thread::sleep(std::time::Duration::from_millis(8));
+            }
+            input::mouse_button(target.id, button, false, x2, y2);
+            format!("drag {button:?} ({x1},{y1}) -> ({x2},{y2})")
+        }
         InjectAction::Wheel => {
             let (x, y) = denorm(&target, inj.x, inj.y);
             let delta = inj.delta.unwrap_or(1);
@@ -246,12 +293,12 @@ fn tool_inject(args: Value, state: &AppState) -> Result<String, String> {
         InjectAction::Key => {
             let code = inj.code.ok_or_else(|| "action=key requiert 'code'".to_string())?;
             let pressed = inj.pressed.unwrap_or(true);
-            input::key(&code, pressed);
+            input::key(Some(target.id), &code, pressed);
             format!("key {code} pressed={pressed}")
         }
         InjectAction::Text => {
             let text = inj.text.ok_or_else(|| "action=text requiert 'text'".to_string())?;
-            let n = type_text(&text);
+            let n = type_text(Some(target.id), &text);
             format!("texte saisi ({n} caractères)")
         }
     };
@@ -260,7 +307,7 @@ fn tool_inject(args: Value, state: &AppState) -> Result<String, String> {
 
 /// Saisie best-effort d'une chaîne : décompose chaque caractère en appui/relâche
 /// via la façade `input::key` (gère la touche Shift multiplateforme).
-fn type_text(text: &str) -> usize {
+fn type_text(hwnd: Option<isize>, text: &str) -> usize {
     let mut count = 0;
     for ch in text.chars() {
         let Some((code, shift)) = char_to_code(ch) else {
@@ -268,12 +315,12 @@ fn type_text(text: &str) -> usize {
             continue;
         };
         if shift {
-            input::key("ShiftLeft", true);
+            input::key(hwnd, "ShiftLeft", true);
         }
-        input::key(&code, true);
-        input::key(&code, false);
+        input::key(hwnd, &code, true);
+        input::key(hwnd, &code, false);
         if shift {
-            input::key("ShiftLeft", false);
+            input::key(hwnd, "ShiftLeft", false);
         }
         count += 1;
     }
@@ -407,7 +454,7 @@ async fn tool_screenshot(state: &AppState) -> Result<String, String> {
     Ok(b64)
 }
 
-fn tool_launch(args: Value) -> Result<String, String> {
+fn tool_launch(args: Value, state: &AppState) -> Result<String, String> {
     let command = args
         .get("command")
         .and_then(Value::as_str)
@@ -421,7 +468,26 @@ fn tool_launch(args: Value) -> Result<String, String> {
         Vec::new()
     };
 
-    // Lance le processus en tâche de fond
+    let allow_virtual = {
+        let cfg_opt = state.config.lock().unwrap();
+        if let Some(cfg_mutex) = &*cfg_opt {
+            cfg_mutex.lock().unwrap().allow_virtual_desktop
+        } else {
+            false
+        }
+    };
+
+    #[cfg(windows)]
+    if allow_virtual {
+        if let Some(_hdesk) = crate::input::desktop::get_or_create_virtual_desktop() {
+            match crate::input::desktop::spawn_on_desktop(command, &arguments, "WinSta0\\appMirror_Desktop") {
+                Ok(pid) => return Ok(format!("application lancée avec succès sur le bureau virtuel (PID: {pid})")),
+                Err(e) => return Err(format!("impossible de lancer l'application sur le bureau virtuel : {e}")),
+            }
+        }
+    }
+
+    // Lance le processus en tâche de fond (bureau par défaut)
     let mut cmd = std::process::Command::new(command);
     cmd.args(&arguments);
 

@@ -29,18 +29,19 @@ impl CaptureSession {
 }
 
 /// Liste les fenêtres capturables (titre non vide).
-pub fn list_windows(locked_apps: &[String]) -> anyhow::Result<Vec<WindowInfo>> {
+pub fn list_windows(locked_apps: &[String], allow_virtual_desktop: bool) -> anyhow::Result<Vec<WindowInfo>> {
     #[cfg(windows)]
     {
-        self::windows::list_windows(locked_apps)
+        self::windows::list_windows(locked_apps, allow_virtual_desktop)
     }
     #[cfg(target_os = "linux")]
     {
+        let _ = allow_virtual_desktop;
         self::linux::list_windows(locked_apps)
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
-        let _ = locked_apps;
+        let _ = (locked_apps, allow_virtual_desktop);
         anyhow::bail!("capture non implémentée sur cette plateforme")
     }
 }

@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 pub enum ClientMessage {
     /// Demande la liste des fenêtres capturables.
     ListWindows,
+    /// Force la fenêtre sélectionnée au premier plan.
+    FocusWindow,
     /// Sélectionne la fenêtre à streamer (HWND transporté en `isize`).
     SelectWindow {
         id: isize,
@@ -45,6 +47,8 @@ pub enum ClientMessage {
     StartRecording { dir: Option<String>, fps: Option<u32> },
     /// Arrête l'enregistrement en cours.
     StopRecording,
+    /// Lance une application sur le bureau virtuel.
+    LaunchApp { command: String },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -185,6 +189,9 @@ pub enum InjectAction {
     MouseMove,
     Button,
     Click,
+    DoubleClick,
+    /// Appui en (x,y), déplacements interpolés jusqu'à (to_x,to_y), relâche.
+    Drag,
     Wheel,
     Key,
     Text,
@@ -199,6 +206,11 @@ pub struct InjectArgs {
     pub x: Option<f64>,
     #[serde(default)]
     pub y: Option<f64>,
+    /// Destination normalisée [0,1] pour action=drag.
+    #[serde(default)]
+    pub to_x: Option<f64>,
+    #[serde(default)]
+    pub to_y: Option<f64>,
     #[serde(default)]
     pub button: Option<MouseButton>,
     #[serde(default)]

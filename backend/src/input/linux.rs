@@ -133,7 +133,8 @@ fn code_to_evdev(code: &str) -> Option<u8> {
     Some(k)
 }
 
-pub fn key(code: &str, pressed: bool) {
+pub fn key(hwnd: Option<isize>, code: &str, pressed: bool) {
+    let _ = hwnd;
     let Some((conn, root)) = conn() else { return };
     let Some(evdev) = code_to_evdev(code) else {
         tracing::debug!("touche non mappée: {code}");
