@@ -65,6 +65,23 @@ pub fn list_windows(locked_apps: &[String], allow_virtual_desktop: bool) -> anyh
     }
 }
 
+/// Demande la fermeture d'une fenêtre
+pub fn close_window(hwnd: isize) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        self::windows::close_window(hwnd)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        self::linux::close_window(hwnd)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = hwnd;
+        anyhow::bail!("fermeture non implémentée sur cette plateforme")
+    }
+}
+
 /// Démarre la capture de la fenêtre `hwnd` (HWND Windows / Window X11).
 ///
 /// Retourne une session (qu'il faut garder en vie et `stop()` en fin) et un

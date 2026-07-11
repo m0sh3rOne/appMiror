@@ -51,6 +51,8 @@ pub enum ClientMessage {
     LaunchApp { command: String },
     /// Lance l'application de la fenêtre active courante sur le bureau virtuel.
     LaunchActiveOnVirtual,
+    /// Ferme l'application d'une fenêtre spécifiée.
+    CloseWindow { id: isize },
     /// Initialise la connexion WebRTC.
     WebrtcInit,
     /// Envoie la réponse SDP (Session Description Protocol) du navigateur.
@@ -104,6 +106,7 @@ pub struct WindowInfo {
     pub id: isize,
     pub title: String,
     pub locked: bool,
+    pub is_virtual: bool,
 }
 
 // ============================================================================

@@ -313,6 +313,22 @@
         <div id="coordChip"></div>
       </div>
     </main>
+    <!-- Confirm Close Modal -->
+    <div id="confirmCloseModal" style="display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); z-index: 1100; align-items: center; justify-content: center;">
+      <div style="background: #1d2026; padding: 2rem; border-radius: 8px; border: 1px solid #3a3f49; width: 380px; text-align: center; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.6); font-family: system-ui, sans-serif;">
+        <h3 style="margin-top: 0; color: #fff; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+          <span>⚠️</span> Confirmation
+        </h3>
+        <p id="confirmCloseText" style="font-size: 0.95rem; opacity: 0.9; margin-bottom: 1.5rem; color: #e6e6e6; line-height: 1.4; word-break: break-all;">
+          Voulez-vous vraiment fermer cette application ?
+        </p>
+        <div style="display: flex; gap: 0.75rem; justify-content: center;">
+          <button id="confirmCloseCancel" style="flex: 1; padding: 0.5rem; background: #2a2f38; border: 1px solid #3a3f49; border-radius: 4px; color: #e6e6e6; cursor: pointer;">Annuler</button>
+          <button id="confirmCloseSubmit" style="flex: 1; padding: 0.5rem; background: #7a2626; border: 1px solid #a33; border-radius: 4px; color: #fff; cursor: pointer; font-weight: bold;">Fermer</button>
+        </div>
+      </div>
+    </div>
+
     <!-- PIN Unlock Modal -->
     <div id="pinModal" style="display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); z-index: 1000; align-items: center; justify-content: center;">
       <div style="background: #1d2026; padding: 2rem; border-radius: 8px; border: 1px solid #3a3f49; width: 320px; text-align: center; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.6); font-family: system-ui, sans-serif;">
@@ -389,11 +405,22 @@
             <input type="checkbox" id="showCursor" checked /> Show the remote window's cursor
           </label>
           <label class="opt" title="Inject input via PostMessage without stealing the host user's focus">
-            <input type="checkbox" id="bgInput" /> Background input (don't steal host focus)
+            <input type="checkbox" id="bgInput" checked /> Background input (don't steal host focus)
           </label>
           <label class="opt" title="Use WebRTC/H.264 streaming instead of WebSocket/JPEG">
             <input type="checkbox" id="webrtcToggle" checked /> WebRTC / H.264 streaming
           </label>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-title">Active Windows</div>
+          <div id="desktopWindowsList" style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.25rem;">
+            <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.5;">Main Desktop</div>
+            <div id="mainWindowsContainer" style="display: flex; flex-direction: column; gap: 0.35rem; max-height: 120px; overflow-y: auto; padding-right: 0.25rem; border: 1px solid #2a2e36; border-radius: 4px; padding: 0.35rem; background: #0f1114;"></div>
+            
+            <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.5; margin-top: 0.3rem;">Virtual Desktop</div>
+            <div id="virtualWindowsContainer" style="display: flex; flex-direction: column; gap: 0.35rem; max-height: 120px; overflow-y: auto; padding-right: 0.25rem; border: 1px solid #2a2e36; border-radius: 4px; padding: 0.35rem; background: #0f1114;"></div>
+          </div>
         </div>
 
         <div class="settings-section">

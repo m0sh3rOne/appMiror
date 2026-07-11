@@ -44,7 +44,13 @@ const zonesCopy = document.getElementById("zonesCopy") as HTMLButtonElement;
 const zonesImport = document.getElementById("zonesImport") as HTMLButtonElement;
 const zonesError = document.getElementById("zonesError") as HTMLDivElement;
 
+const confirmCloseModal = document.getElementById("confirmCloseModal") as HTMLDivElement;
+const confirmCloseText = document.getElementById("confirmCloseText") as HTMLParagraphElement;
+const confirmCloseCancel = document.getElementById("confirmCloseCancel") as HTMLButtonElement;
+const confirmCloseSubmit = document.getElementById("confirmCloseSubmit") as HTMLButtonElement;
+
 let pendingWindowId: number | null = null;
+let pendingCloseWindowId: number | null = null;
 // Dernière sélection (pour re-streamer quand une option de capture change).
 let lastSelectedId: number | null = null;
 let lastPin: string | null = null;
@@ -147,6 +153,16 @@ function sendSelect(id: number, pin: string | null) {
     scale,
     show_cursor: showCursorInput.checked,
   });
+}
+
+function selectWindowAndStream(id: number, isLocked: boolean) {
+  select.value = String(id);
+  if (isLocked) {
+    showPinModal(id);
+  } else {
+    sendSelect(id, null);
+  }
+  settingsModal.style.display = "none";
 }
 
 function submitPin() {
@@ -280,16 +296,130 @@ const stream = new StreamClient(canvas, {
   },
   onServerMessage: (msg: ServerMessage) => {
     switch (msg.type) {
-      case "windows":
+      case "windows": {
         select.length = 1; // garde le placeholder
-        for (const w of msg.items) {
-          const opt = document.createElement("option");
-          opt.value = String(w.id);
-          opt.textContent = (w.locked ? "🔒 " : "") + w.title;
-          opt.dataset.locked = w.locked ? "true" : "false";
-          select.appendChild(opt);
+        
+        const mainContainer = document.getElementById("mainWindowsContainer") as HTMLDivElement;
+        const virtualContainer = document.getElementById("virtualWindowsContainer") as HTMLDivElement;
+        
+        if (mainContainer && virtualContainer) {
+          mainContainer.innerHTML = "";
+          virtualContainer.innerHTML = "";
+          
+          let mainCount = 0;
+          let virtualCount = 0;
+          
+          for (const w of msg.items) {
+            // Select dropdown classique
+            const opt = document.createElement("option");
+            opt.value = String(w.id);
+            opt.textContent = (w.locked ? "🔒 " : "") + (w.is_virtual ? "[V] " : "") + w.title;
+            opt.dataset.locked = w.locked ? "true" : "false";
+            select.appendChild(opt);
+            
+            // Conteneur de ligne
+            const rowDiv = document.createElement("div");
+            rowDiv.style.display = "flex";
+            rowDiv.style.alignItems = "center";
+            rowDiv.style.gap = "0.4rem";
+            rowDiv.style.width = "100%";
+            
+            // Ligne de switch dans les settings
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.style.flex = "1";
+            btn.style.textAlign = "left";
+            btn.style.padding = "0.4rem 0.55rem";
+            btn.style.fontSize = "0.82rem";
+            btn.style.background = "#1d2026";
+            btn.style.border = "1px solid #3a3f49";
+            btn.style.borderRadius = "4px";
+            btn.style.color = "#e6e6e6";
+            btn.style.cursor = "pointer";
+            btn.style.whiteSpace = "nowrap";
+            btn.style.overflow = "hidden";
+            btn.style.textOverflow = "ellipsis";
+            btn.style.transition = "background 0.12s, border-color 0.12s";
+            btn.style.display = "flex";
+            btn.style.alignItems = "center";
+            btn.style.gap = "0.35rem";
+            
+            btn.addEventListener("mouseover", () => {
+              btn.style.background = "#2a2f38";
+              btn.style.borderColor = "#4a505c";
+            });
+            btn.addEventListener("mouseout", () => {
+              btn.style.background = "#1d2026";
+              btn.style.borderColor = "#3a3f49";
+            });
+            
+            btn.innerHTML = `<span>${w.locked ? "🔒 " : ""}</span><span style="flex: 1; overflow: hidden; text-overflow: ellipsis;">${w.title}</span><span style="font-size: 0.7rem; opacity: 0.5;">Switch ➜</span>`;
+            
+            btn.addEventListener("click", () => {
+              selectWindowAndStream(w.id, w.locked);
+            });
+            
+            // Bouton de fermeture
+            const closeBtn = document.createElement("button");
+            closeBtn.type = "button";
+            closeBtn.style.padding = "0.4rem 0.6rem";
+            closeBtn.style.fontSize = "0.82rem";
+            closeBtn.style.background = "#2a1e1e";
+            closeBtn.style.border = "1px solid #5a2e2e";
+            closeBtn.style.borderRadius = "4px";
+            closeBtn.style.color = "#ff8888";
+            closeBtn.style.cursor = "pointer";
+            closeBtn.style.transition = "background 0.12s, border-color 0.12s";
+            closeBtn.style.fontWeight = "bold";
+            closeBtn.title = "Fermer cette application";
+            
+            closeBtn.addEventListener("mouseover", () => {
+              closeBtn.style.background = "#4a2424";
+              closeBtn.style.borderColor = "#7a3434";
+            });
+            closeBtn.addEventListener("mouseout", () => {
+              closeBtn.style.background = "#2a1e1e";
+              closeBtn.style.borderColor = "#5a2e2e";
+            });
+            
+            closeBtn.innerHTML = "❌";
+            closeBtn.addEventListener("click", (e) => {
+              e.stopPropagation();
+              pendingCloseWindowId = w.id;
+              confirmCloseText.textContent = `Voulez-vous vraiment fermer la fenêtre "${w.title}" ?`;
+              confirmCloseModal.style.display = "flex";
+            });
+            
+            rowDiv.appendChild(btn);
+            rowDiv.appendChild(closeBtn);
+            
+            if (w.is_virtual) {
+              virtualContainer.appendChild(rowDiv);
+              virtualCount++;
+            } else {
+              mainContainer.appendChild(rowDiv);
+              mainCount++;
+            }
+          }
+          
+          if (mainCount === 0) {
+            mainContainer.innerHTML = `<div style="font-size: 0.8rem; opacity: 0.5; font-style: italic; padding: 0.2rem;">No windows found</div>`;
+          }
+          if (virtualCount === 0) {
+            virtualContainer.innerHTML = `<div style="font-size: 0.8rem; opacity: 0.5; font-style: italic; padding: 0.2rem;">No windows found</div>`;
+          }
+        } else {
+          // Fallback au select classique si les containers ne sont pas chargés
+          for (const w of msg.items) {
+            const opt = document.createElement("option");
+            opt.value = String(w.id);
+            opt.textContent = (w.locked ? "🔒 " : "") + w.title;
+            opt.dataset.locked = w.locked ? "true" : "false";
+            select.appendChild(opt);
+          }
         }
         break;
+      }
       case "selected":
         hidePinModal();
         // L'injection d'input cible la fenêtre native → coords client natives.
@@ -384,6 +514,20 @@ const settingsModal = document.getElementById("settingsModal") as HTMLDivElement
 (document.getElementById("openSettings") as HTMLButtonElement).addEventListener("click", () => {
   settingsModal.style.display = "flex";
 });
+
+confirmCloseCancel.addEventListener("click", () => {
+  pendingCloseWindowId = null;
+  confirmCloseModal.style.display = "none";
+});
+
+confirmCloseSubmit.addEventListener("click", () => {
+  if (pendingCloseWindowId !== null) {
+    stream.send({ type: "close_window", id: pendingCloseWindowId });
+    pendingCloseWindowId = null;
+    confirmCloseModal.style.display = "none";
+  }
+});
+
 (document.getElementById("settingsClose") as HTMLButtonElement).addEventListener("click", () => {
   settingsModal.style.display = "none";
 });

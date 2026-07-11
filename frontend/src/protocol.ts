@@ -16,6 +16,7 @@ export type ClientMessage =
   | { type: "stop_recording" }
   | { type: "launch_app"; command: string }
   | { type: "launch_active_on_virtual" }
+  | { type: "close_window"; id: number }
   | { type: "webrtc_init" }
   | { type: "webrtc_answer"; sdp: string }
   | { type: "ice_candidate"; candidate: string; sdp_mid?: string | null; sdp_mline_index?: number | null };
@@ -24,6 +25,7 @@ export interface WindowInfo {
   id: number;
   title: string;
   locked: boolean;
+  is_virtual: boolean;
 }
 
 export type ServerMessage =

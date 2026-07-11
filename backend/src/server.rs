@@ -68,7 +68,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, addr: SocketAddr) {
     tracing::info!("WebSocket client connected: {addr}");
     let (sink, mut stream) = socket.split();
     let sender: Sender = Arc::new(Mutex::new(sink));
-    let mut session = Session::default();
+    let mut session = Session {
+        input_bg: true,
+        ..Default::default()
+    };
     // Reçoit les évènements poussés par le serveur MCP (ex. prise de contrôle).
     let mut notices = state.notices.subscribe();
 
@@ -385,6 +388,33 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
             #[cfg(not(windows))]
             {
                 send_json(sender, &ServerMessage::Error { message: "Bureau virtuel supporté uniquement sur Windows".to_string() }).await;
+            }
+        }
+
+        ClientMessage::CloseWindow { id } => {
+            match crate::capture::close_window(id) {
+                Ok(_) => {
+                    send_json(sender, &ServerMessage::Notice { message: "Fermeture de la fenêtre demandée".to_string() }).await;
+                    let sender_clone = sender.clone();
+                    let (locked_apps, allow_virtual_desktop) = {
+                        let cfg_opt = state.config.lock().unwrap();
+                        if let Some(cfg_mutex) = &*cfg_opt {
+                            let cfg = cfg_mutex.lock().unwrap();
+                            (cfg.locked_apps.clone(), cfg.allow_virtual_desktop)
+                        } else {
+                            (Vec::new(), false)
+                        }
+                    };
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+                        if let Ok(windows) = crate::capture::list_windows(&locked_apps, allow_virtual_desktop) {
+                            send_json(&sender_clone, &ServerMessage::Windows { items: windows }).await;
+                        }
+                    });
+                }
+                Err(e) => {
+                    send_json(sender, &ServerMessage::Error { message: format!("Impossible de fermer la fenêtre : {}", e) }).await;
+                }
             }
         }
 

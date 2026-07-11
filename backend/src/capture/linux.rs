@@ -112,6 +112,7 @@ pub fn list_windows(locked_apps: &[String]) -> anyhow::Result<Vec<WindowInfo>> {
             id: win as isize,
             title,
             locked,
+            is_virtual: false,
         });
     }
     Ok(out)
@@ -270,4 +271,12 @@ pub fn is_window_locked(win_id: isize, locked_apps: &[String]) -> bool {
         }
     }
     false
+}
+
+pub fn close_window(hwnd: isize) -> anyhow::Result<()> {
+    use x11rb::protocol::xproto::ConnectionExt;
+    let (conn, _) = x11rb::connect(None)?;
+    conn.destroy_window(hwnd as x11rb::protocol::xproto::Window)?;
+    conn.flush()?;
+    Ok(())
 }

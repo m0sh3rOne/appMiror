@@ -19,9 +19,144 @@ use windows_capture::{
     window::Window,
 };
 
-/// Contrôleur externe : garder vivant, appeler `stop()` pour arrêter.
-pub type CaptureSession =
-    windows_capture::capture::CaptureControl<CaptureHandler, anyhow::Error>;
+pub enum CaptureSession {
+    Wgc(windows_capture::capture::CaptureControl<CaptureHandler, anyhow::Error>),
+    Gdi(GdiCaptureSession),
+}
+
+impl CaptureSession {
+    pub fn stop(self) -> anyhow::Result<()> {
+        match self {
+            Self::Wgc(control) => {
+                let _ = control.stop();
+                Ok(())
+            }
+            Self::Gdi(session) => session.stop(),
+        }
+    }
+}
+
+pub struct GdiCaptureSession {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl GdiCaptureSession {
+    pub fn stop(mut self) -> anyhow::Result<()> {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        Ok(())
+    }
+}
+
+pub fn start_gdi_capture(
+    hwnd: isize,
+    quality: u8,
+    scale: f32,
+    tx: std::sync::Arc<watch::Sender<Vec<u8>>>,
+) -> anyhow::Result<GdiCaptureSession> {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_clone = stop.clone();
+    
+    let thread = std::thread::spawn(move || {
+        use windows::Win32::Foundation::{HWND, RECT};
+        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+        use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
+        use windows::Win32::Graphics::Gdi::{
+            CreateCompatibleDC, CreateCompatibleBitmap, SelectObject, DeleteDC, DeleteObject, GetDC, ReleaseDC, GetDIBits, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BitBlt, SRCCOPY
+        };
+        use std::time::Duration;
+        
+        let h = HWND(hwnd as *mut core::ffi::c_void);
+        
+        while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+            let mut client_rect = RECT::default();
+            if unsafe { GetClientRect(h, &mut client_rect) }.is_err() {
+                break; // window closed
+            }
+            let width = (client_rect.right - client_rect.left) as u32;
+            let height = (client_rect.bottom - client_rect.top) as u32;
+            
+            if width > 0 && height > 0 {
+                unsafe {
+                    let hdc_screen = GetDC(HWND(core::ptr::null_mut()));
+                    let hdc_mem = CreateCompatibleDC(hdc_screen);
+                    let hbitmap = CreateCompatibleBitmap(hdc_screen, width as i32, height as i32);
+                    let old_obj = SelectObject(hdc_mem, hbitmap);
+                    
+                    let mut success = PrintWindow(h, hdc_mem, PRINT_WINDOW_FLAGS(2)).as_bool();
+                    if !success {
+                        // fallback to BitBlt
+                        let hdc_win = GetDC(h);
+                        success = BitBlt(hdc_mem, 0, 0, width as i32, height as i32, hdc_win, 0, 0, SRCCOPY).is_ok();
+                        let _ = ReleaseDC(h, hdc_win);
+                    }
+                    
+                    if success {
+                        let mut bmi = BITMAPINFO {
+                            bmiHeader: BITMAPINFOHEADER {
+                                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                                biWidth: width as i32,
+                                biHeight: -(height as i32), // Top-down
+                                biPlanes: 1,
+                                biBitCount: 32,
+                                biCompression: 0, // BI_RGB
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        };
+                        
+                        let mut buffer = vec![0u8; (width * height * 4) as usize];
+                        let lines = GetDIBits(
+                            hdc_mem,
+                            hbitmap,
+                            0,
+                            height,
+                            Some(buffer.as_mut_ptr() as *mut _),
+                            &mut bmi,
+                            DIB_RGB_COLORS,
+                        );
+                        
+                        if lines > 0 {
+                            let (scaled_rgba, w, h) = if scale < 0.99 {
+                                downscale_rgba(&buffer, width, height, scale)
+                            } else {
+                                (buffer, width, height)
+                            };
+                            
+                            let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+                            for px in scaled_rgba.chunks_exact(4) {
+                                // BGRA -> RGB
+                                rgb.push(px[2]);
+                                rgb.push(px[1]);
+                                rgb.push(px[0]);
+                            }
+                            
+                            let mut jpeg = Vec::new();
+                            if JpegEncoder::new_with_quality(&mut jpeg, quality)
+                                .encode(&rgb, w, h, ExtendedColorType::Rgb8)
+                                .is_ok()
+                            {
+                                let _ = tx.send(jpeg);
+                            }
+                        }
+                    }
+                    
+                    let _ = SelectObject(hdc_mem, old_obj);
+                    let _ = DeleteObject(hbitmap);
+                    let _ = DeleteDC(hdc_mem);
+                    let _ = ReleaseDC(HWND(core::ptr::null_mut()), hdc_screen);
+                }
+            }
+            
+            std::thread::sleep(Duration::from_millis(33)); // ~30 fps
+        }
+    });
+    
+    Ok(GdiCaptureSession { stop, thread: Some(thread) })
+}
 
 #[cfg(windows)]
 fn get_process_name(hwnd: isize) -> Option<String> {
@@ -53,14 +188,14 @@ pub fn list_windows(locked_apps: &[String], allow_virtual_desktop: bool) -> anyh
     let mut out = Vec::new();
     
     // Énumère sur le bureau actif
-    let _ = enumerate_desktop_windows(&mut out, locked_apps);
+    let _ = enumerate_desktop_windows(&mut out, locked_apps, false);
     
     // Énumère sur le bureau virtuel si autorisé et existant
     if allow_virtual_desktop {
         if let Some(hdesk) = crate::input::desktop::get_or_create_virtual_desktop() {
             let mut v_out = Vec::new();
             crate::input::desktop::run_on_desktop(hdesk, || {
-                let _ = enumerate_desktop_windows(&mut v_out, locked_apps);
+                let _ = enumerate_desktop_windows(&mut v_out, locked_apps, true);
             });
             out.extend(v_out);
         }
@@ -69,7 +204,7 @@ pub fn list_windows(locked_apps: &[String], allow_virtual_desktop: bool) -> anyh
     Ok(out)
 }
 
-fn enumerate_desktop_windows(out: &mut Vec<WindowInfo>, locked_apps: &[String]) -> anyhow::Result<()> {
+fn enumerate_desktop_windows(out: &mut Vec<WindowInfo>, locked_apps: &[String], is_virtual: bool) -> anyhow::Result<()> {
     for w in Window::enumerate().map_err(|e| anyhow::anyhow!("enumerate: {e:?}"))? {
         let title = w.title().unwrap_or_default();
         if title.trim().is_empty() {
@@ -100,6 +235,7 @@ fn enumerate_desktop_windows(out: &mut Vec<WindowInfo>, locked_apps: &[String]) 
             id,
             title,
             locked,
+            is_virtual,
         });
     }
     Ok(())
@@ -135,6 +271,8 @@ pub fn start(
 ) -> anyhow::Result<(CaptureSession, watch::Receiver<Vec<u8>>)> {
     let window = Window::from_raw_hwnd(hwnd as *mut core::ffi::c_void);
     let (tx, rx) = watch::channel(Vec::new());
+    let tx = std::sync::Arc::new(tx);
+    let tx_clone = tx.clone();
 
     let cursor = if show_cursor {
         CursorCaptureSettings::WithCursor
@@ -153,10 +291,16 @@ pub fn start(
         FrameSink { tx, quality, scale, hwnd },
     );
 
-    let control = CaptureHandler::start_free_threaded(settings)
-        .map_err(|e| anyhow::anyhow!("start capture: {e:?}"))?;
-
-    Ok((control, rx))
+    match CaptureHandler::start_free_threaded(settings) {
+        Ok(control) => Ok((CaptureSession::Wgc(control), rx)),
+        Err(e) => {
+            tracing::warn!("WGC capture failed: {:?}. Falling back to GDI capture.", e);
+            match start_gdi_capture(hwnd, quality, scale, tx_clone) {
+                Ok(gdi_session) => Ok((CaptureSession::Gdi(gdi_session), rx)),
+                Err(gdi_err) => Err(anyhow::anyhow!("Both WGC and GDI capture failed. WGC: {:?}, GDI: {:?}", e, gdi_err)),
+            }
+        }
+    }
 }
 
 /// Rect **client** (offset X/Y + largeur/hauteur) à l'intérieur de la frame WGC.
@@ -215,7 +359,7 @@ fn crop_rgba(rgba: &[u8], frame_w: u32, dx: u32, dy: u32, cw: u32, ch: u32) -> V
 
 /// Données passées au handler à sa création (`Settings` "flags").
 pub struct FrameSink {
-    tx: watch::Sender<Vec<u8>>,
+    tx: std::sync::Arc<watch::Sender<Vec<u8>>>,
     quality: u8,
     scale: f32,
     hwnd: isize,
@@ -306,4 +450,13 @@ pub fn is_window_locked(hwnd: isize, locked_apps: &[String]) -> bool {
         }
     }
     false
+}
+
+pub fn close_window(hwnd: isize) -> anyhow::Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    use windows::Win32::Foundation::HWND;
+    unsafe {
+        let _ = PostMessageW(HWND(hwnd as *mut core::ffi::c_void), WM_CLOSE, None, None);
+    }
+    Ok(())
 }
