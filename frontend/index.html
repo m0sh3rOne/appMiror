@@ -65,6 +65,10 @@
       .settings-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.6px; opacity: 0.55; }
       .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; font-size: 0.88rem; }
       .settings-row-btns { display: flex; gap: 0.5rem; }
+      .settings-slider { display: flex; align-items: center; gap: 0.6rem; font-size: 0.88rem; }
+      .settings-slider > span:first-child { flex: 0 0 90px; }
+      .settings-slider input[type="range"] { flex: 1; min-width: 0; }
+      .settings-slider .slider-val { flex: 0 0 44px; text-align: right; font-variant-numeric: tabular-nums; opacity: 0.85; }
       #settingsModal .opt { display: flex; align-items: center; gap: 0.45rem; font-size: 0.86rem; cursor: pointer; user-select: none; }
       #settingsModal .opt input { margin: 0; cursor: pointer; }
       #settingsModal input[type="text"] { width: 100%; box-sizing: border-box; flex: none; min-width: 0; }
@@ -363,12 +367,23 @@
 
         <div class="settings-section">
           <div class="settings-title">Stream</div>
-          <label class="settings-row"><span>Quality</span>
-            <select id="qualitySelect" title="Stream quality: resolution and JPEG compression">
+          <label class="settings-row"><span>Preset</span>
+            <select id="qualitySelect" title="Quality/resolution presets — pick one or fine-tune with the sliders below">
               <option value="high" selected>HD · 100% / 75%</option>
               <option value="medium">Medium · 70% / 60%</option>
               <option value="low">Eco · 50% / 45%</option>
+              <option value="custom">Custom</option>
             </select>
+          </label>
+          <label class="settings-slider" title="JPEG compression quality (higher = sharper, more bandwidth)">
+            <span>JPEG quality</span>
+            <input type="range" id="qualitySlider" min="10" max="100" step="5" value="75" />
+            <span id="qualitySliderVal" class="slider-val">75%</span>
+          </label>
+          <label class="settings-slider" title="Resolution scale (lower = smaller frames, less bandwidth/latency)">
+            <span>Resolution</span>
+            <input type="range" id="scaleSlider" min="25" max="100" step="5" value="100" />
+            <span id="scaleSliderVal" class="slider-val">100%</span>
           </label>
           <label class="opt" title="Include the remote window's cursor in the video stream">
             <input type="checkbox" id="showCursor" checked /> Show the remote window's cursor

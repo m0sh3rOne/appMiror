@@ -23,6 +23,10 @@ const pinSubmit = document.getElementById("pinSubmit") as HTMLButtonElement;
 const pinCancel = document.getElementById("pinCancel") as HTMLButtonElement;
 const pinError = document.getElementById("pinError") as HTMLDivElement;
 const qualitySelect = document.getElementById("qualitySelect") as HTMLSelectElement;
+const qualitySlider = document.getElementById("qualitySlider") as HTMLInputElement;
+const qualitySliderVal = document.getElementById("qualitySliderVal") as HTMLSpanElement;
+const scaleSlider = document.getElementById("scaleSlider") as HTMLInputElement;
+const scaleSliderVal = document.getElementById("scaleSliderVal") as HTMLSpanElement;
 const showCursorInput = document.getElementById("showCursor") as HTMLInputElement;
 const bgInput = document.getElementById("bgInput") as HTMLInputElement;
 const webrtcToggle = document.getElementById("webrtcToggle") as HTMLInputElement;
@@ -58,15 +62,76 @@ function hidePinModal() {
   pinModal.style.display = "none";
 }
 
+// Préréglages : { qualité JPEG %, résolution % }. Les sliders sont la source de
+// vérité ; le dropdown ne fait que les positionner (et passe en "custom" dès
+// qu'on ajuste finement).
+const QUALITY_PRESETS: Record<string, { q: number; s: number }> = {
+  high: { q: 75, s: 100 },
+  medium: { q: 60, s: 70 },
+  low: { q: 45, s: 50 },
+};
+
 function getQualitySettings(): { quality: number; scale: number } {
-  const val = qualitySelect.value;
-  if (val === "high") {
-    return { quality: 75, scale: 1.0 };
-  } else if (val === "low") {
-    return { quality: 45, scale: 0.5 };
-  } else {
-    return { quality: 60, scale: 0.7 };
-  }
+  return {
+    quality: Number(qualitySlider.value),
+    scale: Number(scaleSlider.value) / 100,
+  };
+}
+
+function updateQualityLabels() {
+  qualitySliderVal.textContent = `${qualitySlider.value}%`;
+  scaleSliderVal.textContent = `${scaleSlider.value}%`;
+}
+
+/** Aligne le dropdown de préréglage sur les valeurs actuelles des sliders. */
+function syncPresetFromSliders() {
+  const q = Number(qualitySlider.value);
+  const s = Number(scaleSlider.value);
+  const match = Object.entries(QUALITY_PRESETS).find(([, p]) => p.q === q && p.s === s);
+  qualitySelect.value = match ? match[0] : "custom";
+}
+
+/** Re-streame la fenêtre courante pour appliquer les nouveaux réglages à chaud. */
+function reStreamIfActive() {
+  if (lastSelectedId !== null) sendSelect(lastSelectedId, lastPin);
+}
+
+// Restaure les réglages persistés.
+{
+  const savedQ = localStorage.getItem("appmirror.quality");
+  const savedS = localStorage.getItem("appmirror.scale");
+  if (savedQ) qualitySlider.value = savedQ;
+  if (savedS) scaleSlider.value = savedS;
+  updateQualityLabels();
+  syncPresetFromSliders();
+}
+
+qualitySelect.addEventListener("change", () => {
+  const p = QUALITY_PRESETS[qualitySelect.value];
+  if (!p) return; // "custom" : on garde les sliders tels quels
+  qualitySlider.value = String(p.q);
+  scaleSlider.value = String(p.s);
+  updateQualityLabels();
+  persistQuality();
+  reStreamIfActive();
+});
+
+function persistQuality() {
+  localStorage.setItem("appmirror.quality", qualitySlider.value);
+  localStorage.setItem("appmirror.scale", scaleSlider.value);
+}
+
+for (const slider of [qualitySlider, scaleSlider]) {
+  // input = pendant le glissement : label live + bascule en "custom".
+  slider.addEventListener("input", () => {
+    updateQualityLabels();
+    syncPresetFromSliders();
+  });
+  // change = au relâchement : on persiste et on ré-applique au flux.
+  slider.addEventListener("change", () => {
+    persistQuality();
+    reStreamIfActive();
+  });
 }
 
 /** Envoi centralisé de select_window : porte qualité/échelle/curseur + PIN. */
