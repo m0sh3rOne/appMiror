@@ -78,7 +78,7 @@ impl Visit for MessageVisitor {
 
 /// Ne conserve que les cibles réseau pertinentes pour la section Logs.
 fn is_network_target(target: &str) -> bool {
-    target.contains("::server") || target.contains("::mcp") || target.contains("::gui")
+    target.starts_with("appmirror_backend") || target.contains("appmirror")
 }
 
 /// Dernière composante du target (`appmirror_backend::mcp::transport` -> `transport`).

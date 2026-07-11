@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 //! appMirror — backend de capture/streaming.
 
 mod app;

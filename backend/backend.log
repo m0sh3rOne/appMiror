@@ -1,0 +1,17 @@
+[2m2026-07-11T09:37:09.710778Z[0m [32m INFO[0m [2mappmirror_backend::gui[0m[2m:[0m appMirror backend listening on http://0.0.0.0:8080
+[2m2026-07-11T09:37:38.153260Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] SessionId: None
+[2m2026-07-11T09:37:38.153401Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] parsed JSON-RPC method: 'initialize', id: Some(Number(1))
+[2m2026-07-11T09:37:38.153466Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] returning response directly in HTTP body (fallback/curl mode)
+[2m2026-07-11T09:37:38.153762Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP SSE GET] New connection from Host '127.0.0.1:8080'. Endpoint returned: 'http://127.0.0.1:8080/api/mcp/message?sessionId=3742a7c2-afed-4101-80f1-1ded224b1801'
+[2m2026-07-11T09:37:38.154418Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] SessionId: None
+[2m2026-07-11T09:37:38.154438Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] parsed JSON-RPC method: 'notifications/initialized', id: None
+[2m2026-07-11T09:37:38.154459Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] notification processed (no response needed)
+[2m2026-07-11T09:37:38.154854Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] SessionId: None
+[2m2026-07-11T09:37:38.154870Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] parsed JSON-RPC method: 'tools/list', id: Some(Number(2))
+[2m2026-07-11T09:37:38.154955Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] returning response directly in HTTP body (fallback/curl mode)
+[2m2026-07-11T09:37:44.912983Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] SessionId: None
+[2m2026-07-11T09:37:44.913040Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] parsed JSON-RPC method: 'tools/call', id: Some(Number(3))
+[2m2026-07-11T09:37:44.913541Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] returning response directly in HTTP body (fallback/curl mode)
+[2m2026-07-11T09:37:51.048199Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] SessionId: None
+[2m2026-07-11T09:37:51.048265Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] parsed JSON-RPC method: 'tools/call', id: Some(Number(4))
+[2m2026-07-11T09:37:51.048360Z[0m [32m INFO[0m [2mappmirror_backend::mcp::transport[0m[2m:[0m [MCP Message POST] returning response directly in HTTP body (fallback/curl mode)
