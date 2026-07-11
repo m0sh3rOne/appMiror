@@ -24,6 +24,20 @@ rust-embed = "8.0"
 eframe = "0.27"
 local-ip-address = "0.6"
 webbrowser = "1.0"
+# WebRTC/H.264 streaming — optionnel : `openh264` compile libopenh264 en C++ via
+# `openh264-sys2` (nécessite une toolchain C++). Derrière la feature `webrtc`
+# (activée par défaut) pour que `cargo check --no-default-features` type-check le
+# reste du code sans la dépendance native. Voir CLAUDE.md.
+webrtc = { version = "0.10", optional = true }
+openh264 = { version = "0.4", optional = true }
+
+[features]
+default = ["webrtc", "pipewire"]
+# Streaming WebRTC/H.264 (dépendance C++ openh264).
+webrtc = ["dep:webrtc", "dep:openh264"]
+# Capture PipeWire/Wayland sous Linux (lie libpipewire, une lib C).
+pipewire = ["dep:pipewire", "dep:ashpd"]
+
 
 # Capture: Windows Graphics Capture wrapper
 [target.'cfg(windows)'.dependencies]
@@ -33,16 +47,19 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
     "Win32_System_Threading",
     "Win32_System_ProcessStatus",
     "Win32_System_StationsAndDesktops",
     "Win32_Security",
 ] }
 
-# Capture/input Linux : X11 (fonctionne aussi sous XWayland). Pur Rust, pas de
-# lib C. XTest pour l'injection (pas de root, contrairement à /dev/uinput).
+# Capture/input Linux : X11 (pur Rust, toujours présent) + PipeWire/Wayland
+# (optionnel, derrière la feature `pipewire` — lie la lib C libpipewire).
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["xtest"] }
+ashpd = { version = "0.8", features = ["tokio"], optional = true }
+pipewire = { version = "0.8", optional = true }
 
 [profile.release]
 opt-level = 3

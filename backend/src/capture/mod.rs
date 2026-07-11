@@ -14,8 +14,26 @@ pub use self::windows::CaptureSession;
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+mod linux_pipewire;
+
 #[cfg(target_os = "linux")]
-pub use self::linux::CaptureSession;
+pub enum CaptureSession {
+    X11(self::linux::CaptureSession),
+    #[cfg(feature = "pipewire")]
+    PipeWire(self::linux_pipewire::CaptureSession),
+}
+
+#[cfg(target_os = "linux")]
+impl CaptureSession {
+    pub fn stop(self) -> anyhow::Result<()> {
+        match self {
+            Self::X11(s) => s.stop(),
+            #[cfg(feature = "pipewire")]
+            Self::PipeWire(s) => s.stop(),
+        }
+    }
+}
 
 /// Stub pour les plateformes sans backend (le serveur compile mais renvoie
 /// une erreur à l'usage).
@@ -27,6 +45,7 @@ impl CaptureSession {
         Ok(())
     }
 }
+
 
 /// Liste les fenêtres capturables (titre non vide).
 pub fn list_windows(locked_apps: &[String], allow_virtual_desktop: bool) -> anyhow::Result<Vec<WindowInfo>> {
@@ -64,7 +83,14 @@ pub fn start(
     }
     #[cfg(target_os = "linux")]
     {
-        self::linux::start(hwnd, quality, scale, show_cursor)
+        // Sous Wayland, on préfère PipeWire (si la feature est compilée) ; sinon X11.
+        #[cfg(feature = "pipewire")]
+        if std::env::var("WAYLAND_DISPLAY").is_ok() {
+            let (session, rx) = self::linux_pipewire::start(hwnd, quality, scale, show_cursor)?;
+            return Ok((CaptureSession::PipeWire(session), rx));
+        }
+        let (session, rx) = self::linux::start(hwnd, quality, scale, show_cursor)?;
+        Ok((CaptureSession::X11(session), rx))
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {

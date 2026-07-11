@@ -49,6 +49,18 @@ pub enum ClientMessage {
     StopRecording,
     /// Lance une application sur le bureau virtuel.
     LaunchApp { command: String },
+    /// Lance l'application de la fenêtre active courante sur le bureau virtuel.
+    LaunchActiveOnVirtual,
+    /// Initialise la connexion WebRTC.
+    WebrtcInit,
+    /// Envoie la réponse SDP (Session Description Protocol) du navigateur.
+    WebrtcAnswer { sdp: String },
+    /// Transmet un candidat ICE réseau.
+    IceCandidate {
+        candidate: String,
+        sdp_mid: Option<String>,
+        sdp_mline_index: Option<u16>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -60,7 +72,7 @@ pub enum MouseButton {
 }
 
 /// Serveur -> Client (messages de contrôle en JSON ; les frames vidéo sont
-/// envoyées séparément en binaire).
+/// envoyées séparément en binaire ou en flux RTP via WebRTC).
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
@@ -77,6 +89,14 @@ pub enum ServerMessage {
     /// main sur une fenêtre).
     Notice { message: String },
     Error { message: String },
+    /// Offre SDP (Session Description Protocol) générée par le serveur pour WebRTC.
+    WebrtcOffer { sdp: String },
+    /// Candidat ICE réseau généré par le serveur.
+    WebrtcIceCandidate {
+        candidate: String,
+        sdp_mid: Option<String>,
+        sdp_mline_index: Option<u16>,
+    },
 }
 
 #[derive(Debug, Serialize, Clone)]

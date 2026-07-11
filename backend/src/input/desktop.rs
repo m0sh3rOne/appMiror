@@ -135,3 +135,34 @@ pub fn spawn_on_desktop(command: &str, arguments: &[String], desktop_name: &str)
         }
     }
 }
+
+pub fn get_process_image_path(hwnd: isize) -> Option<String> {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT};
+    use windows::Win32::Foundation::{CloseHandle, HWND};
+
+    unsafe {
+        let mut pid = 0;
+        let hwnd_raw = HWND(hwnd as *mut core::ffi::c_void);
+        GetWindowThreadProcessId(hwnd_raw, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut len = 2048u32;
+        let mut name = vec![0u16; len as usize];
+        let success = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            windows::core::PWSTR(name.as_mut_ptr()),
+            &mut len,
+        );
+        let _ = CloseHandle(handle);
+        if success.is_ok() && len > 0 {
+            Some(String::from_utf16_lossy(&name[..len as usize]))
+        } else {
+            None
+        }
+    }
+}
+

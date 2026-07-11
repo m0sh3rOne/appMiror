@@ -25,10 +25,13 @@ const pinError = document.getElementById("pinError") as HTMLDivElement;
 const qualitySelect = document.getElementById("qualitySelect") as HTMLSelectElement;
 const showCursorInput = document.getElementById("showCursor") as HTMLInputElement;
 const bgInput = document.getElementById("bgInput") as HTMLInputElement;
+const webrtcToggle = document.getElementById("webrtcToggle") as HTMLInputElement;
+const recFpsInput = document.getElementById("recFps") as HTMLInputElement;
 const virtualCursor = document.getElementById("virtualCursor") as HTMLDivElement;
 const focusWindowBtn = document.getElementById("focusWindow") as HTMLButtonElement;
 const launchCmdInput = document.getElementById("launchCmd") as HTMLInputElement;
 const btnLaunchVirtual = document.getElementById("btnLaunchVirtual") as HTMLButtonElement;
+const btnSendActiveToVirtual = document.getElementById("btnSendActiveToVirtual") as HTMLButtonElement;
 
 const zonesModal = document.getElementById("zonesModal") as HTMLDivElement;
 const zonesJsonArea = document.getElementById("zonesJsonArea") as HTMLTextAreaElement;
@@ -294,6 +297,40 @@ for (const b of toolButtons) {
   b.addEventListener("click", () => setTool(b.dataset.tool as Tool));
 }
 
+// ── Bascule de la barre d'outils d'annotation ────────────────────────────────
+const toolbarEl = document.getElementById("toolbar") as HTMLDivElement;
+const toggleToolbarBtn = document.getElementById("toggleToolbar") as HTMLButtonElement;
+let toolbarVisible = localStorage.getItem("appmirror.toolbar") !== "hidden";
+function applyToolbarVisible() {
+  toolbarEl.hidden = !toolbarVisible;
+  toggleToolbarBtn.classList.toggle("active", toolbarVisible);
+  // En masquant la barre, on revient au contrôle distant (pas d'outil orphelin).
+  if (!toolbarVisible) setTool("cursor");
+}
+toggleToolbarBtn.addEventListener("click", () => {
+  toolbarVisible = !toolbarVisible;
+  localStorage.setItem("appmirror.toolbar", toolbarVisible ? "shown" : "hidden");
+  applyToolbarVisible();
+});
+applyToolbarVisible();
+
+// ── Fenêtre modale des réglages ──────────────────────────────────────────────
+const settingsModal = document.getElementById("settingsModal") as HTMLDivElement;
+(document.getElementById("openSettings") as HTMLButtonElement).addEventListener("click", () => {
+  settingsModal.style.display = "flex";
+});
+(document.getElementById("settingsClose") as HTMLButtonElement).addEventListener("click", () => {
+  settingsModal.style.display = "none";
+});
+settingsModal.addEventListener("click", (e) => {
+  if (e.target === settingsModal) settingsModal.style.display = "none";
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && settingsModal.style.display === "flex") {
+    settingsModal.style.display = "none";
+  }
+});
+
 const colorInput = document.getElementById("annColor") as HTMLInputElement;
 const widthInput = document.getElementById("annWidth") as HTMLInputElement;
 const widthVal = document.getElementById("annWidthVal") as HTMLSpanElement;
@@ -405,7 +442,11 @@ function updateVirtualCursor(e?: MouseEvent) {
   const shouldShow = (isCursorHidden || isBgInput) && isCursorTool;
 
   if (shouldShow && lastMouseEvent) {
-    const rect = stage.getBoundingClientRect();
+    // On se cale sur le rect du CANVAS (= boîte de contenu, à l'intérieur de la
+    // bordure 1px de #stage), pas sur #stage : left/top:0 du curseur virtuel sont
+    // relatifs à cette même boîte, donc la pointe colle exactement au pointeur
+    // (et à la cible du clic, qui utilise aussi le rect du canvas).
+    const rect = canvas.getBoundingClientRect();
     const x = lastMouseEvent.clientX - rect.left;
     const y = lastMouseEvent.clientY - rect.top;
     virtualCursor.style.left = `${x}px`;
@@ -440,6 +481,13 @@ bgInput.addEventListener("change", () => {
   updateVirtualCursor();
 });
 
+// Toggle WebRTC : relance la capture pour basculer de flux
+webrtcToggle.addEventListener("change", () => {
+  if (lastSelectedId !== null) {
+    sendSelect(lastSelectedId, lastPin);
+  }
+});
+
 shotBtn.addEventListener("click", () =>
   stream.send({ type: "screenshot", dir: saveDir() }),
 );
@@ -452,7 +500,8 @@ recBtn.addEventListener("click", () => {
   if (recording) {
     stream.send({ type: "stop_recording" });
   } else {
-    stream.send({ type: "start_recording", dir: saveDir(), fps: 10 });
+    const fps = recFpsInput ? parseInt(recFpsInput.value, 10) : 10;
+    stream.send({ type: "start_recording", dir: saveDir(), fps });
   }
 });
 
@@ -461,4 +510,8 @@ btnLaunchVirtual.addEventListener("click", () => {
   if (command) {
     stream.send({ type: "launch_app", command });
   }
+});
+
+btnSendActiveToVirtual.addEventListener("click", () => {
+  stream.send({ type: "launch_active_on_virtual" });
 });

@@ -65,6 +65,7 @@ export interface Slice {
   y: number;
   w: number;
   h: number;
+  name: string; // libellé optionnel de la zone ("" = sans nom)
 }
 export interface Guide {
   id: number;
@@ -175,6 +176,10 @@ export class Annotator {
   private editor: HTMLTextAreaElement | null = null;
   private editorMeta: EditorMeta | null = null;
 
+  // Éditeur de nom de zone (slice) : un <input> flottant au-dessus de la slice.
+  private sliceNameEditor: HTMLInputElement | null = null;
+  private sliceNameEditorId: number | null = null;
+
   // Groupes SVG (reconstruits par render()).
   private gShapes: SVGElement = el("g");
   private gVeil: SVGElement = el("g");
@@ -217,6 +222,7 @@ export class Annotator {
   setTool(t: Tool) {
     if (t === this.tool) return;
     this.commitEditor();
+    this.commitSliceName();
     this.drag = null;
     this.guideDraft = null;
     this.sel = null;
@@ -265,6 +271,7 @@ export class Annotator {
     this.scale = scale;
     this.rulers.layout(scale, this.nativeW, this.nativeH);
     this.positionEditor();
+    this.positionSliceNameEditor();
     this.render();
   }
 
@@ -309,6 +316,7 @@ export class Annotator {
   slicesJson(): string {
     const zones = this.model.slices.map((s, i) => ({
       index: i + 1,
+      name: s.name || undefined,
       x: Math.round(s.x),
       y: Math.round(s.y),
       w: Math.round(s.w),
@@ -347,7 +355,8 @@ export class Annotator {
           x: item.x,
           y: item.y,
           w: item.w,
-          h: item.h
+          h: item.h,
+          name: typeof item.name === "string" ? item.name : "",
         });
       }
 
@@ -533,7 +542,7 @@ export class Annotator {
           }
         } else {
           this.sel = null;
-          const slice: Slice = { id: this.nextId++, x: p.x, y: p.y, w: 0, h: 0 };
+          const slice: Slice = { id: this.nextId++, x: p.x, y: p.y, w: 0, h: 0, name: "" };
           this.drag = { t: "new-slice", ox: p.x, oy: p.y, slice };
         }
         this.render();
@@ -738,13 +747,12 @@ export class Annotator {
         this.render();
       }
     } else if (this.tool === "slice") {
+      // Double-clic = renommer la zone (la suppression se fait via Suppr).
       const g = hit("[data-slice]");
       if (g) {
-        this.pushHistory();
         const id = Number(g.getAttribute("data-slice"));
-        this.model.slices = this.model.slices.filter((s) => s.id !== id);
-        if (this.sel?.t === "slice" && this.sel.id === id) this.sel = null;
-        this.render();
+        const slice = this.model.slices.find((s) => s.id === id);
+        if (slice) this.openSliceNameEditor(slice);
       }
     }
   }
@@ -948,6 +956,69 @@ export class Annotator {
       this.pendingSnapshot = null;
     }
     this.render();
+  }
+
+  // ── Éditeur de nom de zone (slice) ───────────────────────────────────────
+
+  private openSliceNameEditor(slice: Slice) {
+    this.commitEditor();
+    this.closeSliceNameEditor();
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "slice-name-editor";
+    input.value = slice.name;
+    input.placeholder = "zone name";
+    input.spellcheck = false;
+    input.maxLength = 40;
+    this.sliceNameEditor = input;
+    this.sliceNameEditorId = slice.id;
+    this.positionSliceNameEditor();
+    this.stage.appendChild(input);
+    input.focus();
+    input.select();
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.commitSliceName();
+      } else if (e.key === "Escape") {
+        this.closeSliceNameEditor();
+      }
+    });
+    input.addEventListener("blur", () => {
+      if (this.sliceNameEditor === input) this.commitSliceName();
+    });
+  }
+
+  private positionSliceNameEditor() {
+    if (!this.sliceNameEditor || this.sliceNameEditorId === null) return;
+    const sl = this.model.slices.find((s) => s.id === this.sliceNameEditorId);
+    if (!sl) return;
+    const r = norm(sl);
+    const s = this.scale;
+    this.sliceNameEditor.style.left = `${r.x * s}px`;
+    this.sliceNameEditor.style.top = `${r.y * s}px`;
+  }
+
+  private commitSliceName() {
+    if (!this.sliceNameEditor || this.sliceNameEditorId === null) return;
+    const id = this.sliceNameEditorId;
+    const name = this.sliceNameEditor.value.trim();
+    this.closeSliceNameEditor();
+    const sl = this.model.slices.find((s) => s.id === id);
+    if (sl && sl.name !== name) {
+      this.pushHistory();
+      sl.name = name;
+      this.render();
+      this.onStatus(name ? `zone renamed “${name}”` : "zone name cleared");
+    }
+  }
+
+  private closeSliceNameEditor() {
+    const inp = this.sliceNameEditor;
+    this.sliceNameEditor = null;
+    this.sliceNameEditorId = null;
+    inp?.remove();
   }
 
   // ── Rendu SVG ────────────────────────────────────────────────────────────
@@ -1195,6 +1266,21 @@ export class Annotator {
     });
     num.textContent = String(index + 1);
     g.appendChild(num);
+    // Nom de la zone (si défini) à droite du badge.
+    if (sl.name) {
+      const nameText = el("text", {
+        x: r1(r.x + bw + u(5)),
+        y: r1(r.y + bh * 0.78),
+        "font-size": u(11),
+        "font-family": "system-ui, sans-serif",
+        fill: "#ffd27a",
+        "paint-order": "stroke",
+        stroke: "rgba(0,0,0,0.7)",
+        "stroke-width": u(2),
+      });
+      nameText.textContent = sl.name;
+      g.appendChild(nameText);
+    }
     // Dimensions en bas à droite.
     const dims = el("text", {
       x: r1(r.x + r.w - u(4)),
@@ -1345,5 +1431,5 @@ const TOOL_HINTS: Record<Tool, string> = {
   pen: "freehand drawing (remote control paused)",
   marker: "freehand highlight (remote control paused)",
   ruler: "drag to measure; drag from a ruler to add a guide (double-click = remove)",
-  slice: "draw slice zones; drag = move, handle = resize, double-click = delete",
+  slice: "draw slice zones; drag = move, handle = resize, double-click = rename, Del = delete",
 };

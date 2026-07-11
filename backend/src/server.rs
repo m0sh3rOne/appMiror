@@ -31,10 +31,17 @@ struct Session {
     /// Injection en arrière-plan (PostMessage) plutôt que SendInput au premier
     /// plan : ne vole pas le focus de l'utilisateur hôte.
     input_bg: bool,
+    /// Session WebRTC active pour cette connexion.
+    #[cfg(feature = "webrtc")]
+    webrtc: Option<crate::webrtc::WebRtcSession>,
 }
 
 impl Session {
-    fn stop_capture(&mut self) {
+    async fn stop_capture(&mut self) {
+        #[cfg(feature = "webrtc")]
+        if let Some(w) = self.webrtc.take() {
+            w.stop().await;
+        }
         if let Some(rec) = self.recording.take() {
             let (dir, frames) = rec.stop();
             tracing::info!("enregistrement arrêté: {} ({frames} frames)", dir.display());
@@ -85,7 +92,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, addr: SocketAddr) {
         }
     }
 
-    session.stop_capture();
+    session.stop_capture().await;
     tracing::info!("WebSocket client disconnected: {addr}");
 }
 
@@ -144,7 +151,7 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
                 }
             }
 
-            session.stop_capture();
+            session.stop_capture().await;
 
             // En mode arrière-plan, on ne vole PAS le focus de l'hôte.
             if !session.input_bg {
@@ -346,6 +353,109 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
                 let _ = command;
                 send_json(sender, &ServerMessage::Error { message: "Bureau virtuel supporté uniquement sur Windows".to_string() }).await;
             }
+        }
+
+        ClientMessage::LaunchActiveOnVirtual => {
+            #[cfg(windows)]
+            {
+                if let Some(hwnd) = session.hwnd {
+                    if let Some(exe_path) = crate::input::desktop::get_process_image_path(hwnd) {
+                        if let Some(_hdesk) = crate::input::desktop::get_or_create_virtual_desktop() {
+                            let arguments: Vec<String> = Vec::new();
+                            match crate::input::desktop::spawn_on_desktop(&exe_path, &arguments, "WinSta0\\appMirror_Desktop") {
+                                Ok(pid) => {
+                                    send_json(sender, &ServerMessage::Notice { 
+                                        message: format!("Application lancée sur le bureau virtuel (PID: {})", pid) 
+                                    }).await;
+                                }
+                                Err(e) => {
+                                    send_json(sender, &ServerMessage::Error { message: format!("Échec du lancement : {}", e) }).await;
+                                }
+                            }
+                        } else {
+                            send_json(sender, &ServerMessage::Error { message: "Impossible de créer/ouvrir le bureau virtuel".to_string() }).await;
+                        }
+                    } else {
+                        send_json(sender, &ServerMessage::Error { message: "Impossible de déterminer le chemin de l'application active".to_string() }).await;
+                    }
+                } else {
+                    send_json(sender, &ServerMessage::Error { message: "Aucune fenêtre active sélectionnée".to_string() }).await;
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                send_json(sender, &ServerMessage::Error { message: "Bureau virtuel supporté uniquement sur Windows".to_string() }).await;
+            }
+        }
+
+        #[cfg(feature = "webrtc")]
+        ClientMessage::WebrtcInit => {
+            let Some(rx) = session.frames.clone() else {
+                send_json(
+                    sender,
+                    &ServerMessage::Error {
+                        message: "aucune capture active — sélectionnez une fenêtre d'abord".into(),
+                    },
+                )
+                .await;
+                return;
+            };
+
+            let sender_clone = sender.clone();
+            let on_candidate = move |msg| {
+                let sender = sender_clone.clone();
+                tokio::spawn(async move {
+                    send_json(&sender, &msg).await;
+                });
+            };
+
+            // Arrête toute session WebRTC existante
+            if let Some(w) = session.webrtc.take() {
+                w.stop().await;
+            }
+
+            match crate::webrtc::WebRtcSession::create(rx, on_candidate).await {
+                Ok((webrtc_session, sdp_offer)) => {
+                    session.webrtc = Some(webrtc_session);
+                    send_json(sender, &ServerMessage::WebrtcOffer { sdp: sdp_offer }).await;
+                }
+                Err(e) => {
+                    send_json(sender, &ServerMessage::Error { message: format!("Échec WebRTC : {}", e) }).await;
+                }
+            }
+        }
+
+        #[cfg(feature = "webrtc")]
+        ClientMessage::WebrtcAnswer { sdp } => {
+            if let Some(ref w) = session.webrtc {
+                if let Err(e) = w.set_remote_answer(&sdp).await {
+                    send_json(sender, &ServerMessage::Error { message: format!("Échec SDP answer : {}", e) }).await;
+                }
+            } else {
+                send_json(sender, &ServerMessage::Error { message: "Session WebRTC non initiée".into() }).await;
+            }
+        }
+
+        #[cfg(feature = "webrtc")]
+        ClientMessage::IceCandidate { candidate, sdp_mid, sdp_mline_index } => {
+            if let Some(ref w) = session.webrtc {
+                if let Err(e) = w.add_remote_candidate(&candidate, sdp_mid, sdp_mline_index).await {
+                    tracing::debug!("Erreur ICE candidate : {}", e);
+                }
+            }
+        }
+
+        // Sans la feature `webrtc`, les messages de signaling WebRTC sont acceptés
+        // mais inertes (le protocole les conserve pour rester en phase avec le front).
+        #[cfg(not(feature = "webrtc"))]
+        ClientMessage::WebrtcInit
+        | ClientMessage::WebrtcAnswer { .. }
+        | ClientMessage::IceCandidate { .. } => {
+            send_json(
+                sender,
+                &ServerMessage::Error { message: "WebRTC not compiled in this build".into() },
+            )
+            .await;
         }
     }
 }

@@ -14,7 +14,11 @@ export type ClientMessage =
   | { type: "screenshot"; dir?: string | null }
   | { type: "start_recording"; dir?: string | null; fps?: number | null }
   | { type: "stop_recording" }
-  | { type: "launch_app"; command: string };
+  | { type: "launch_app"; command: string }
+  | { type: "launch_active_on_virtual" }
+  | { type: "webrtc_init" }
+  | { type: "webrtc_answer"; sdp: string }
+  | { type: "ice_candidate"; candidate: string; sdp_mid?: string | null; sdp_mline_index?: number | null };
 
 export interface WindowInfo {
   id: number;
@@ -29,4 +33,7 @@ export type ServerMessage =
   | { type: "recording_started"; dir: string; fps: number }
   | { type: "recording_stopped"; dir: string; frames: number }
   | { type: "notice"; message: string }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "webrtc_offer"; sdp: string }
+  | { type: "webrtc_ice_candidate"; candidate: string; sdp_mid?: string | null; sdp_mline_index?: number | null };
+

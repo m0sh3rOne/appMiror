@@ -106,11 +106,10 @@ pub fn wheel_bg(hwnd: isize, delta: i32, x: i32, y: i32) {
 pub fn key_bg(hwnd: isize, code: &str, pressed: bool) {
     #[cfg(windows)]
     imp::key_bg(hwnd, code, pressed);
+    // Linux : XTest est global (le hwnd est ignoré côté impl) — on retombe sur
+    // l'injection au premier plan tout en respectant la signature à 3 arguments.
     #[cfg(target_os = "linux")]
-    {
-        let _ = hwnd;
-        imp::key(code, pressed);
-    }
+    imp::key(Some(hwnd), code, pressed);
     #[cfg(not(any(windows, target_os = "linux")))]
     let _ = (hwnd, code, pressed);
 }

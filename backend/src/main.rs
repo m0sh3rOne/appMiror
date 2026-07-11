@@ -10,6 +10,11 @@ mod mcp;
 mod protocol;
 mod recorder;
 mod server;
+#[cfg(feature = "webrtc")]
+mod h264;
+#[cfg(feature = "webrtc")]
+mod webrtc;
+
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};

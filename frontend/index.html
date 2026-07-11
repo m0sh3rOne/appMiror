@@ -46,6 +46,32 @@
 
       /* Un display explicite sur les boutons ne doit pas neutraliser l'attribut hidden. */
       [hidden] { display: none !important; }
+
+      /* ── Fenêtre modale de configuration ─────────────────────────────── */
+      .modal-overlay {
+        position: fixed; inset: 0; z-index: 1000;
+        background: rgba(0, 0, 0, 0.7);
+        align-items: center; justify-content: center;
+      }
+      .modal-card {
+        background: #1d2026; border: 1px solid #3a3f49; border-radius: 10px;
+        width: 420px; max-width: calc(100vw - 2rem); max-height: 85vh; overflow: auto;
+        padding: 1.4rem; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+        display: flex; flex-direction: column; gap: 1.1rem;
+      }
+      .modal-h { margin: 0; color: #fff; display: flex; align-items: center; gap: 0.5rem; font-size: 1.1rem; }
+      .settings-section { display: flex; flex-direction: column; gap: 0.55rem; padding-bottom: 1rem; border-bottom: 1px solid #2a2e36; }
+      .settings-section:last-of-type { border-bottom: none; padding-bottom: 0; }
+      .settings-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.6px; opacity: 0.55; }
+      .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; font-size: 0.88rem; }
+      .settings-row-btns { display: flex; gap: 0.5rem; }
+      #settingsModal .opt { display: flex; align-items: center; gap: 0.45rem; font-size: 0.86rem; cursor: pointer; user-select: none; }
+      #settingsModal .opt input { margin: 0; cursor: pointer; }
+      #settingsModal input[type="text"] { width: 100%; box-sizing: border-box; flex: none; min-width: 0; }
+      #settingsModal .settings-row select { flex: none; }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
+      /* Bouton toggle actif (toolbar visible). */
+      #toggleToolbar.active { background: #2f6fb3; border-color: #4a8fd6; color: #fff; }
       button {
         display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem;
         min-height: 2rem; padding: 0.35rem 0.7rem;
@@ -186,6 +212,22 @@
         line-height: 1.25;
         white-space: pre;
       }
+      /* Champ de renommage d'une zone (double-clic sur une slice). */
+      .slice-name-editor {
+        position: absolute;
+        z-index: 6;
+        min-width: 90px;
+        padding: 1px 5px;
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        font-size: 12px;
+        color: #141414;
+        background: #ffb020;
+        border: 1px solid #141414;
+        border-radius: 3px;
+        outline: none;
+      }
+      .slice-name-editor::placeholder { color: rgba(20, 20, 20, 0.55); }
       #virtualCursor {
         position: absolute;
         width: 12px;
@@ -209,11 +251,6 @@
       <span class="sep"></span>
 
       <div class="grp" role="group" aria-label="Stream">
-        <select id="qualitySelect" title="Stream quality: resolution and JPEG compression">
-          <option value="high" selected>HD · 100% / 75%</option>
-          <option value="medium">Medium · 70% / 60%</option>
-          <option value="low">Eco · 50% / 45%</option>
-        </select>
         <select id="fitMode" title="Display mode: how the mirror fits the window">
           <option value="fit" selected>Fit to window</option>
           <option value="fill">Fill width</option>
@@ -225,38 +262,11 @@
 
       <span class="sep"></span>
 
-      <div class="grp" role="group" aria-label="Disk capture">
-        <input
-          id="saveDir"
-          type="text"
-          placeholder="capture folder…"
-          title="Local path where captures are written (on the backend machine). Default: Pictures/appMirror"
-        />
+      <div class="grp" role="group" aria-label="Panels">
+        <button id="toggleToolbar" title="Show / hide the annotation toolbar">🎨 Annotate</button>
+        <button id="openSettings" title="Stream, capture &amp; input settings">⚙ Settings</button>
         <button id="shot" title="Save the current frame as JPEG">📷 Capture</button>
         <button id="rec" title="Record a sequence of images (JPEG)">⏺ REC</button>
-      </div>
-
-      <span class="sep"></span>
-
-      <div class="grp" role="group" aria-label="Virtual desktop launcher">
-        <input
-          id="launchCmd"
-          type="text"
-          placeholder="app path (e.g. notepad.exe)…"
-          title="Launch application on the virtual desktop"
-        />
-        <button id="btnLaunchVirtual" title="Launch application on the virtual desktop">🚀 Launch Virtual</button>
-      </div>
-
-      <span class="sep"></span>
-
-      <div class="grp" role="group" aria-label="Display and input options">
-        <label class="opt" title="Include the remote window's cursor in the video stream">
-          <input type="checkbox" id="showCursor" checked /> Cursor
-        </label>
-        <label class="opt" title="Inject input via PostMessage without stealing the host user's focus (background control)">
-          <input type="checkbox" id="bgInput" /> Background
-        </label>
       </div>
 
       <span id="status">disconnected</span>
@@ -342,6 +352,56 @@
           <button id="zonesClose" style="padding: 0.5rem 1rem; background: #2a2f38; border: 1px solid #3a3f49; border-radius: 4px; color: #e6e6e6; cursor: pointer;">Close</button>
           <button id="zonesCopy" style="padding: 0.5rem 1rem; background: #2a2f38; border: 1px solid #3a3f49; border-radius: 4px; color: #e6e6e6; cursor: pointer;">📋 Copy to Clipboard</button>
           <button id="zonesImport" style="padding: 0.5rem 1rem; background: #2f6fb3; border: 1px solid #4a8fd6; border-radius: 4px; color: #e6e6e6; cursor: pointer;">📥 Import JSON</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Modal (config moved out of the header to keep it light) -->
+    <div id="settingsModal" class="modal-overlay" style="display: none;">
+      <div class="modal-card">
+        <h3 class="modal-h"><span>⚙</span> Settings</h3>
+
+        <div class="settings-section">
+          <div class="settings-title">Stream</div>
+          <label class="settings-row"><span>Quality</span>
+            <select id="qualitySelect" title="Stream quality: resolution and JPEG compression">
+              <option value="high" selected>HD · 100% / 75%</option>
+              <option value="medium">Medium · 70% / 60%</option>
+              <option value="low">Eco · 50% / 45%</option>
+            </select>
+          </label>
+          <label class="opt" title="Include the remote window's cursor in the video stream">
+            <input type="checkbox" id="showCursor" checked /> Show the remote window's cursor
+          </label>
+          <label class="opt" title="Inject input via PostMessage without stealing the host user's focus">
+            <input type="checkbox" id="bgInput" /> Background input (don't steal host focus)
+          </label>
+          <label class="opt" title="Use WebRTC/H.264 streaming instead of WebSocket/JPEG">
+            <input type="checkbox" id="webrtcToggle" checked /> WebRTC / H.264 streaming
+          </label>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-title">Capture</div>
+          <input id="saveDir" type="text" placeholder="capture folder… (default: Pictures/appMirror)"
+                 title="Local path where captures are written (on the backend machine)" />
+          <label class="settings-row"><span>Frames per second (REC)</span>
+            <input id="recFps" type="number" min="1" max="60" value="10" title="Frames per second for image sequence recording" style="width: 70px; padding: 0.4rem; background: #0f1114; color: #fff; border: 1px solid #3a3f49; border-radius: 4px; text-align: center;" />
+          </label>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-title">Virtual desktop</div>
+          <input id="launchCmd" type="text" placeholder="app path (e.g. notepad.exe)…"
+                 title="Launch application on the virtual desktop" />
+          <div class="settings-row-btns">
+            <button id="btnLaunchVirtual" title="Launch application on the virtual desktop">🚀 Launch Virtual</button>
+            <button id="btnSendActiveToVirtual" title="Relaunch the currently streamed application on the virtual desktop">➡️ Send Current App</button>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button id="settingsClose">Close</button>
         </div>
       </div>
     </div>

@@ -150,7 +150,7 @@ pub fn start(
         MinimumUpdateIntervalSettings::Default,
         DirtyRegionSettings::Default,
         ColorFormat::Rgba8,
-        FrameSink { tx, quality, scale },
+        FrameSink { tx, quality, scale, hwnd },
     );
 
     let control = CaptureHandler::start_free_threaded(settings)
@@ -159,11 +159,66 @@ pub fn start(
     Ok((control, rx))
 }
 
+/// Rect **client** (offset X/Y + largeur/hauteur) à l'intérieur de la frame WGC.
+///
+/// WGC capture la fenêtre entière (barre de titre + bordures) : sans recadrage,
+/// la frame affichée inclut ces décorations alors que l'injection d'input est en
+/// coordonnées **client** — d'où un décalage (grand en haut, faible en bas). On
+/// recadre donc chaque frame à la zone client pour aligner affichage et input.
+/// Repère : l'origine de la texture WGC = les *extended frame bounds* DWM.
+fn client_crop(hwnd: isize, frame_w: u32, frame_h: u32) -> Option<(u32, u32, u32, u32)> {
+    use windows::Win32::Foundation::{HWND, POINT, RECT};
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+    unsafe {
+        let h = HWND(hwnd as *mut core::ffi::c_void);
+        let mut ext = RECT::default();
+        DwmGetWindowAttribute(
+            h,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut ext as *mut RECT as *mut core::ffi::c_void,
+            std::mem::size_of::<RECT>() as u32,
+        )
+        .ok()?;
+        let mut origin = POINT { x: 0, y: 0 };
+        if !ClientToScreen(h, &mut origin).as_bool() {
+            return None;
+        }
+        let mut cr = RECT::default();
+        GetClientRect(h, &mut cr).ok()?;
+        let cw = (cr.right - cr.left).max(0) as u32;
+        let ch = (cr.bottom - cr.top).max(0) as u32;
+        if cw == 0 || ch == 0 {
+            return None;
+        }
+        let dx = (origin.x - ext.left).max(0) as u32;
+        let dy = (origin.y - ext.top).max(0) as u32;
+        if dx >= frame_w || dy >= frame_h {
+            return None;
+        }
+        Some((dx, dy, cw.min(frame_w - dx), ch.min(frame_h - dy)))
+    }
+}
+
+/// Extrait le sous-rectangle (dx,dy,cw,ch) d'une frame RGBA (frame_w de large).
+fn crop_rgba(rgba: &[u8], frame_w: u32, dx: u32, dy: u32, cw: u32, ch: u32) -> Vec<u8> {
+    let stride = frame_w as usize * 4;
+    let row_bytes = cw as usize * 4;
+    let mut out = Vec::with_capacity(ch as usize * row_bytes);
+    for y in 0..ch as usize {
+        let start = (dy as usize + y) * stride + dx as usize * 4;
+        out.extend_from_slice(&rgba[start..start + row_bytes]);
+    }
+    out
+}
+
 /// Données passées au handler à sa création (`Settings` "flags").
 pub struct FrameSink {
     tx: watch::Sender<Vec<u8>>,
     quality: u8,
     scale: f32,
+    hwnd: isize,
 }
 
 pub struct CaptureHandler {
@@ -184,10 +239,20 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         _control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
         let mut buffer = frame.buffer()?;
-        let width = buffer.width();
-        let height = buffer.height();
+        let frame_w = buffer.width();
+        let frame_h = buffer.height();
         // Buffer RGBA sans padding de ligne.
         let rgba = buffer.as_nopadding_buffer()?;
+
+        // Recadre à la zone client (WGC capture la fenêtre entière). En cas
+        // d'échec (fenêtre disparue…), on retombe sur la frame complète.
+        let (cropped, width, height) = match client_crop(self.sink.hwnd, frame_w, frame_h) {
+            Some((dx, dy, cw, ch)) if dx != 0 || dy != 0 || cw != frame_w || ch != frame_h => {
+                (crop_rgba(rgba, frame_w, dx, dy, cw, ch), cw, ch)
+            }
+            _ => (rgba.to_vec(), frame_w, frame_h),
+        };
+        let rgba: &[u8] = &cropped;
 
         let (scaled_rgba, w, h) = if self.sink.scale < 0.99 {
             downscale_rgba(rgba, width, height, self.sink.scale)
