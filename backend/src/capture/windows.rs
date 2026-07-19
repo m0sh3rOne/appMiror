@@ -236,6 +236,7 @@ fn enumerate_desktop_windows(out: &mut Vec<WindowInfo>, locked_apps: &[String], 
             title,
             locked,
             is_virtual,
+            context: proc_name.unwrap_or_else(|| "unknown".into()),
         });
     }
     Ok(())

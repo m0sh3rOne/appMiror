@@ -145,3 +145,18 @@ pub fn key(hwnd: Option<isize>, code: &str, pressed: bool) {
     let _ = conn.xtest_fake_input(kind, keycode, 0, *root, 0, 0, 0);
     let _ = conn.flush();
 }
+
+pub fn text_bg(hwnd: isize, text: &str) {
+    // XTest est global et ne fournit pas d'injection Unicode directe. Les
+    // caractères ASCII simples sont rejoués comme codes physiques best-effort.
+    for ch in text.chars() {
+        let code = match ch.to_ascii_lowercase() {
+            'a'..='z' => format!("Key{}", ch.to_ascii_uppercase()),
+            '0'..='9' => format!("Digit{ch}"),
+            ' ' => "Space".into(),
+            _ => continue,
+        };
+        key(Some(hwnd), &code, true);
+        key(Some(hwnd), &code, false);
+    }
+}

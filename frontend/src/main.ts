@@ -5,6 +5,7 @@ import { InputController } from "./input";
 import { StreamClient } from "./stream";
 import { Annotator, type Tool } from "./annotate";
 import { Rulers, RULER_THICKNESS } from "./rulers";
+import { MacroController } from "./macros";
 import type { ServerMessage } from "./protocol";
 
 const canvas = document.getElementById("screen") as HTMLCanvasElement;
@@ -54,6 +55,7 @@ let pendingCloseWindowId: number | null = null;
 // Dernière sélection (pour re-streamer quand une option de capture change).
 let lastSelectedId: number | null = null;
 let lastPin: string | null = null;
+const windowContexts = new Map<number, string>();
 
 function showPinModal(windowId: number) {
   pendingWindowId = windowId;
@@ -298,6 +300,7 @@ const stream = new StreamClient(canvas, {
     switch (msg.type) {
       case "windows": {
         select.length = 1; // garde le placeholder
+        windowContexts.clear();
         
         const mainContainer = document.getElementById("mainWindowsContainer") as HTMLDivElement;
         const virtualContainer = document.getElementById("virtualWindowsContainer") as HTMLDivElement;
@@ -310,6 +313,7 @@ const stream = new StreamClient(canvas, {
           let virtualCount = 0;
           
           for (const w of msg.items) {
+            windowContexts.set(w.id, w.context);
             // Select dropdown classique
             const opt = document.createElement("option");
             opt.value = String(w.id);
@@ -411,6 +415,7 @@ const stream = new StreamClient(canvas, {
         } else {
           // Fallback au select classique si les containers ne sont pas chargés
           for (const w of msg.items) {
+            windowContexts.set(w.id, w.context);
             const opt = document.createElement("option");
             opt.value = String(w.id);
             opt.textContent = (w.locked ? "🔒 " : "") + w.title;
@@ -425,6 +430,9 @@ const stream = new StreamClient(canvas, {
         // L'injection d'input cible la fenêtre native → coords client natives.
         // L'overlay d'annotation, lui, est calé sur la frame (voir onFrameSize).
         input.setNativeSize(msg.width, msg.height);
+        if (lastSelectedId !== null) {
+          macros.setTarget(lastSelectedId, windowContexts.get(lastSelectedId) ?? "unknown", msg.width, msg.height);
+        }
         statusEl.textContent = `streaming ${msg.width}×${msg.height}`;
         setRecording(false); // toute nouvelle sélection arrête l'enregistrement
         if (annot.activeTool() === "cursor") canvas.focus();
@@ -439,6 +447,19 @@ const stream = new StreamClient(canvas, {
       case "recording_stopped":
         setRecording(false);
         statusEl.textContent = `sequence: ${msg.frames} frames → ${msg.dir}`;
+        break;
+      case "macro_saved":
+        statusEl.textContent = `macro ${msg.name} sauvegardée → ${msg.path}`;
+        break;
+      case "macro_list":
+        macros.showLibrary(msg.items);
+        statusEl.textContent = `${msg.items.length} macro(s) disponible(s)`;
+        break;
+      case "macro_loaded":
+        macros.load(msg.macro_file);
+        break;
+      case "macro_played":
+        statusEl.textContent = `test terminé : ${msg.steps} étapes exécutées`;
         break;
       case "notice":
         statusEl.textContent = `⚙️ ${msg.message}`;
@@ -464,11 +485,24 @@ const stream = new StreamClient(canvas, {
   },
 });
 
+const macros = new MacroController(
+  document.getElementById("macroPanel") as HTMLElement,
+  (message) => stream.send(message),
+  layout,
+  (message) => (statusEl.textContent = message),
+);
+input.setObserver((message, text) => macros.observe(message, text));
+(document.getElementById("toggleMacros") as HTMLButtonElement).addEventListener("click", () => macros.togglePanel());
+
 input.attach();
 stream.connect();
 layout();
 
 // ── Barre d'outils d'annotation ──────────────────────────────────────────────
+
+// Doit être initialisé avant applyToolbarVisible(): si la toolbar est mémorisée
+// comme masquée, setTool("cursor") appelle immédiatement updateVirtualCursor().
+let lastMouseEvent: MouseEvent | null = null;
 
 const toolButtons = [...document.querySelectorAll<HTMLButtonElement>("#toolbar [data-tool]")];
 const slicesJsonBtn = document.getElementById("slicesJsonBtn") as HTMLButtonElement;
@@ -638,8 +672,6 @@ connectBtn.addEventListener("click", () => {
     sendSelect(id, null);
   }
 });
-
-let lastMouseEvent: MouseEvent | null = null;
 
 function updateVirtualCursor(e?: MouseEvent) {
   if (e) {

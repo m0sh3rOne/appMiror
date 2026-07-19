@@ -28,7 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, GetWindowThreadProcessId, IsChild, IsIconic, PostMessageW, SetForegroundWindow,
     ShowWindow, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GUITHREADINFO,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+    WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
 
@@ -440,6 +440,13 @@ pub fn key_bg(hwnd: isize, code: &str, pressed: bool) {
     post(target, msg, vk as usize, LPARAM(lparam as isize));
 }
 
+pub fn text_bg(hwnd: isize, text: &str) {
+    let target = kbd_target(as_hwnd(hwnd));
+    for unit in text.encode_utf16() {
+        post(target, WM_CHAR, unit as usize, LPARAM(1));
+    }
+}
+
 struct ChildWindowInfo {
     class_name: String,
     text: String,
@@ -543,4 +550,3 @@ pub fn inspect_ui_elements(hwnd: isize) -> Result<serde_json::Value, String> {
 
     Ok(json!(elements))
 }
-

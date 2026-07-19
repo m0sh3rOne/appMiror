@@ -7,6 +7,8 @@ mod config;
 mod gui;
 mod input;
 mod logbuf;
+mod macro_player;
+mod macro_store;
 mod mcp;
 mod protocol;
 mod recorder;

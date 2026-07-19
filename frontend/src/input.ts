@@ -5,6 +5,7 @@
 import type { ClientMessage, MouseButtonName } from "./protocol";
 
 type Sender = (msg: ClientMessage) => void;
+export type InputObserver = (msg: ClientMessage, text?: string) => void;
 
 const BUTTON_MAP: Record<number, MouseButtonName> = {
   0: "left",
@@ -19,6 +20,7 @@ export class InputController {
 
   /** false = injection suspendue (un outil d'annotation est actif). */
   private enabled = true;
+  private observer: InputObserver | null = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -32,6 +34,15 @@ export class InputController {
 
   setEnabled(v: boolean) {
     this.enabled = v;
+  }
+
+  setObserver(observer: InputObserver) {
+    this.observer = observer;
+  }
+
+  private emit(msg: ClientMessage, text?: string) {
+    this.observer?.(msg, text);
+    this.send(msg);
   }
 
   /**
@@ -58,7 +69,7 @@ export class InputController {
     c.addEventListener("mousemove", (e) => {
       if (!this.enabled) return;
       const { x, y } = this.toNative(e);
-      this.send({ type: "mouse_move", x, y });
+      this.emit({ type: "mouse_move", x, y });
     });
 
     c.addEventListener("mousedown", (e) => {
@@ -66,14 +77,14 @@ export class InputController {
       c.focus();
       const { x, y } = this.toNative(e);
       const button = BUTTON_MAP[e.button];
-      if (button) this.send({ type: "mouse_button", button, pressed: true, x, y });
+      if (button) this.emit({ type: "mouse_button", button, pressed: true, x, y });
     });
 
     c.addEventListener("mouseup", (e) => {
       if (!this.enabled) return;
       const { x, y } = this.toNative(e);
       const button = BUTTON_MAP[e.button];
-      if (button) this.send({ type: "mouse_button", button, pressed: false, x, y });
+      if (button) this.emit({ type: "mouse_button", button, pressed: false, x, y });
     });
 
     // Empêche le menu contextuel natif pour transmettre le clic droit.
@@ -89,7 +100,7 @@ export class InputController {
         const { x, y } = this.toNative(e);
         // deltaY > 0 = scroll vers le bas ; on inverse pour coller à WHEEL_DELTA.
         const delta = e.deltaY > 0 ? -1 : 1;
-        this.send({ type: "wheel", delta, x, y });
+        this.emit({ type: "wheel", delta, x, y });
       },
       { passive: false },
     );
@@ -99,12 +110,12 @@ export class InputController {
       if (!this.enabled) return;
       e.preventDefault();
       if (e.repeat) return;
-      this.send({ type: "key", code: e.code, pressed: true });
+      this.emit({ type: "key", code: e.code, pressed: true }, e.key.length === 1 ? e.key : undefined);
     });
     c.addEventListener("keyup", (e) => {
       if (!this.enabled) return;
       e.preventDefault();
-      this.send({ type: "key", code: e.code, pressed: false });
+      this.emit({ type: "key", code: e.code, pressed: false }, e.key.length === 1 ? e.key : undefined);
     });
   }
 }

@@ -114,6 +114,15 @@ pub fn key_bg(hwnd: isize, code: &str, pressed: bool) {
     let _ = (hwnd, code, pressed);
 }
 
+/// Saisie sémantique de texte pour les macros. Sous Windows, cible directement
+/// le dernier contrôle enfant cliqué via WM_CHAR ; Linux reste best-effort.
+pub fn text_bg(hwnd: isize, text: &str) {
+    #[cfg(any(windows, target_os = "linux"))]
+    imp::text_bg(hwnd, text);
+    #[cfg(not(any(windows, target_os = "linux")))]
+    { let _ = (hwnd, text); }
+}
+
 pub fn inspect_ui_elements(hwnd: isize) -> Result<serde_json::Value, String> {
     #[cfg(windows)]
     {
@@ -125,4 +134,3 @@ pub fn inspect_ui_elements(hwnd: isize) -> Result<serde_json::Value, String> {
         Ok(serde_json::json!([]))
     }
 }
-

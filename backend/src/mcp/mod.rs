@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 use crate::app::{AppState, AttachedWindow};
 use crate::protocol::{
     AttachArgs, InjectAction, InjectArgs, McpError, McpMethod, McpRequest, McpResponse, MouseButton,
+    PlayMacroArgs, SaveMacroArgs,
 };
 use crate::{capture, input, recorder};
 
@@ -136,6 +137,31 @@ fn tool_definitions() -> Value {
             "description": "Examine la hiérarchie des boutons, champs de saisie et labels de la fenêtre actuellement attachée.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }
+        ,{
+            "name": "save_macro",
+            "description": "Sauvegarde un workflow d'interactions normalisées, lié à un contexte de processus.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "context": { "type": "string" },
+                    "name": { "type": "string" },
+                    "window_id": { "type": "integer" },
+                    "steps": { "type": "array", "items": { "type": "object" } }
+                },
+                "required": ["context", "name", "window_id", "steps"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "play_macro",
+            "description": "Rejoue une macro sur la fenêtre MCP attachée, en injection arrière-plan sans voler le focus.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"],
+                "additionalProperties": false
+            }
+        }
     ])
 }
 
@@ -154,6 +180,8 @@ async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> 
         "get_window_screenshot" => tool_screenshot(state).await.map(|b64| json!([ { "type": "image", "data": b64, "mimeType": "image/jpeg" } ])),
         "launch_app" => tool_launch(args, state).map(|t| json!([ { "type": "text", "text": t } ])),
         "inspect_ui_elements" => tool_inspect(state).map(|v| json!([ { "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() } ])),
+        "save_macro" => tool_save_macro(args).await.map(|t| json!([ { "type": "text", "text": t } ])),
+        "play_macro" => tool_play_macro(args, state).await.map(|t| json!([ { "type": "text", "text": t } ])),
         other => return Err(McpError { code: -32602, message: format!("outil inconnu: {other}") }),
     };
 
@@ -167,6 +195,34 @@ async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> 
             "isError": true
         }),
     })
+}
+
+async fn tool_save_macro(args: Value) -> Result<String, String> {
+    let parsed: SaveMacroArgs = serde_json::from_value(args).map_err(|e| format!("arguments invalides: {e}"))?;
+    let path = crate::macro_store::save(parsed).await?;
+    Ok(format!("macro sauvegardée: {}", path.display()))
+}
+
+async fn tool_play_macro(args: Value, state: &AppState) -> Result<String, String> {
+    let parsed: PlayMacroArgs = serde_json::from_value(args).map_err(|e| format!("arguments invalides: {e}"))?;
+    let target = state.attached.lock().unwrap().ok_or_else(|| "aucune fenêtre attachée (appeler attach_to_window d'abord)".to_string())?;
+    let file = crate::macro_store::load_by_name(&parsed.name).await?;
+    let (locked_apps, allow_virtual) = {
+        let cfg_opt = state.config.lock().unwrap();
+        if let Some(cfg_mutex) = &*cfg_opt {
+            let cfg = cfg_mutex.lock().unwrap();
+            (cfg.locked_apps.clone(), cfg.allow_virtual_desktop)
+        } else { (Vec::new(), false) }
+    };
+    let windows = capture::list_windows(&locked_apps, allow_virtual).map_err(|e| format!("vérification du contexte: {e}"))?;
+    let actual_context = windows.iter().find(|w| w.id == target.id).map(|w| w.context.to_lowercase())
+        .ok_or_else(|| format!("fenêtre cible {} introuvable", target.id))?;
+    if actual_context != file.context.to_lowercase() {
+        return Err(format!("contexte incompatible: macro={}, cible={actual_context}", file.context));
+    }
+    let count = crate::macro_player::play(&file, target).await?;
+    let _ = state.notices.send(format!("MCP played macro '{}' ({count} steps)", file.name));
+    Ok(format!("macro '{}' exécutée: {count} étapes", file.name))
 }
 
 fn tool_list_windows(state: &AppState) -> Result<String, String> {
@@ -514,5 +570,3 @@ fn tool_inspect(state: &AppState) -> Result<serde_json::Value, String> {
     };
     input::inspect_ui_elements(target.id)
 }
-
-

@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use crate::app::AppState;
 use crate::capture::{self, CaptureSession};
 use crate::input;
-use crate::protocol::{ClientMessage, ServerMessage};
+use crate::protocol::{ClientMessage, SaveMacroArgs, ServerMessage};
 use crate::recorder;
 
 type Sender = Arc<Mutex<SplitSink<WebSocket, Message>>>;
@@ -243,6 +243,37 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
                 }
             } else {
                 input::key(session.hwnd, &code, pressed);
+            }
+        }
+
+        ClientMessage::SaveMacro { context, name, window_id, steps } => {
+            if session.hwnd != Some(window_id) {
+                send_json(sender, &ServerMessage::Error { message: "la fenêtre de la macro n'est plus la fenêtre active".into() }).await;
+                return;
+            }
+            match crate::macro_store::save(SaveMacroArgs { context, name: name.clone(), window_id, steps }).await {
+                Ok(path) => send_json(sender, &ServerMessage::MacroSaved { path: path.display().to_string(), name }).await,
+                Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+            }
+        }
+        ClientMessage::ListMacros => match crate::macro_store::list().await {
+            Ok(items) => send_json(sender, &ServerMessage::MacroList { items }).await,
+            Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+        },
+        ClientMessage::LoadMacro { context, name } => match crate::macro_store::load_named(&context, &name).await {
+            Ok(macro_file) => send_json(sender, &ServerMessage::MacroLoaded { macro_file }).await,
+            Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+        },
+        ClientMessage::TestMacro { steps } => {
+            let Some(hwnd) = session.hwnd else {
+                send_json(sender, &ServerMessage::Error { message: "aucune fenêtre streamée".into() }).await;
+                return;
+            };
+            let (width, height) = input::client_size(hwnd).unwrap_or((0, 0));
+            let file = crate::protocol::MacroFile { version: 1, context: "test".into(), name: "test".into(), window_id: hwnd, steps };
+            match crate::macro_player::play(&file, crate::app::AttachedWindow { id: hwnd, width, height }).await {
+                Ok(steps) => send_json(sender, &ServerMessage::MacroPlayed { name: "test".into(), steps }).await,
+                Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
             }
         }
 

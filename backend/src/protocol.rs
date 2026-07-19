@@ -40,6 +40,16 @@ pub enum ClientMessage {
     Wheel { delta: i32, x: i32, y: i32 },
     /// Touche clavier. `code` = `KeyboardEvent.code` (ex: "KeyA", "Enter").
     Key { code: String, pressed: bool },
+    /// Persiste une macro depuis l'interface humaine.
+    SaveMacro {
+        context: String,
+        name: String,
+        window_id: isize,
+        steps: Vec<MacroStep>,
+    },
+    ListMacros,
+    LoadMacro { context: String, name: String },
+    TestMacro { steps: Vec<MacroStep> },
     /// Sauvegarde la frame courante en JPEG dans `dir` (défaut si absent/vide).
     Screenshot { dir: Option<String> },
     /// Démarre l'enregistrement d'une séquence d'images dans un sous-dossier
@@ -65,7 +75,7 @@ pub enum ClientMessage {
     },
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseButton {
     Left,
@@ -87,6 +97,10 @@ pub enum ServerMessage {
     RecordingStarted { dir: String, fps: u32 },
     /// Enregistrement arrêté ; `frames` = nombre d'images écrites.
     RecordingStopped { dir: String, frames: u64 },
+    MacroSaved { path: String, name: String },
+    MacroList { items: Vec<MacroSummary> },
+    MacroLoaded { macro_file: MacroFile },
+    MacroPlayed { name: String, steps: usize },
     /// Évènement informatif poussé au superviseur (ex. un agent MCP a pris la
     /// main sur une fenêtre).
     Notice { message: String },
@@ -107,6 +121,36 @@ pub struct WindowInfo {
     pub title: String,
     pub locked: bool,
     pub is_virtual: bool,
+    /// Nom du processus, utilisé comme contexte stable de workflow.
+    pub context: String,
+}
+
+/// Étape persistée d'un workflow. Les coordonnées pointeur sont normalisées.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MacroStep {
+    MouseMove { x: f64, y: f64 },
+    MouseButton { button: MouseButton, pressed: bool, x: f64, y: f64 },
+    Wheel { delta: i32, x: f64, y: f64 },
+    Key { code: String, pressed: bool },
+    Text { text: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacroFile {
+    pub version: u32,
+    pub context: String,
+    pub name: String,
+    /// Identifiant au moment de l'enregistrement (informatif, non durable).
+    pub window_id: isize,
+    pub steps: Vec<MacroStep>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MacroSummary {
+    pub context: String,
+    pub name: String,
+    pub steps: usize,
 }
 
 // ============================================================================
@@ -244,4 +288,17 @@ pub struct InjectArgs {
     pub code: Option<String>,
     #[serde(default)]
     pub text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveMacroArgs {
+    pub context: String,
+    pub name: String,
+    pub window_id: isize,
+    pub steps: Vec<MacroStep>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PlayMacroArgs {
+    pub name: String,
 }

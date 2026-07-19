@@ -1,0 +1,228 @@
+import type { ClientMessage, MacroFile, MacroStep, MacroSummary } from "./protocol";
+
+type Sender = (message: ClientMessage) => void;
+
+export class MacroController {
+  private steps: MacroStep[] = [];
+  private recording = false;
+  private nativeW = 0;
+  private nativeH = 0;
+  private windowId: number | null = null;
+  private context = "unknown";
+  private lastMoveAt = 0;
+  private draggedIndex: number | null = null;
+
+  constructor(
+    private readonly panel: HTMLElement,
+    private readonly send: Sender,
+    private readonly onLayout: () => void,
+    private readonly onStatus: (message: string) => void,
+  ) {
+    this.bind();
+    this.render();
+  }
+
+  setTarget(windowId: number, context: string, width: number, height: number) {
+    this.windowId = windowId;
+    this.context = context || "unknown";
+    this.nativeW = width;
+    this.nativeH = height;
+    this.panel.querySelector<HTMLElement>("#macroContext")!.textContent = this.context;
+  }
+
+  togglePanel() {
+    this.panel.hidden = !this.panel.hidden;
+    document.getElementById("toggleMacros")?.classList.toggle("active", !this.panel.hidden);
+    this.onLayout();
+  }
+
+  close() {
+    this.recording = false;
+    this.panel.hidden = true;
+    document.getElementById("toggleMacros")?.classList.remove("active");
+    this.syncRecordButton();
+    this.onLayout();
+  }
+
+  observe(message: ClientMessage, semanticText?: string) {
+    if (!this.recording || this.nativeW <= 0 || this.nativeH <= 0) return;
+    let step: MacroStep | null = null;
+    const nx = (x: number) => Math.max(0, Math.min(1, x / Math.max(1, this.nativeW - 1)));
+    const ny = (y: number) => Math.max(0, Math.min(1, y / Math.max(1, this.nativeH - 1)));
+    switch (message.type) {
+      case "mouse_move": {
+        const now = performance.now();
+        if (now - this.lastMoveAt < 100) return;
+        this.lastMoveAt = now;
+        step = { type: "mouse_move", x: nx(message.x), y: ny(message.y) };
+        break;
+      }
+      case "mouse_button": step = { ...message, x: nx(message.x), y: ny(message.y) }; break;
+      case "wheel": step = { ...message, x: nx(message.x), y: ny(message.y) }; break;
+      case "key":
+        if (semanticText) {
+          if (!message.pressed) return;
+          const previous = this.steps[this.steps.length - 1];
+          if (previous?.type === "text") previous.text += semanticText;
+          else this.steps.push({ type: "text", text: semanticText });
+          this.render();
+          return;
+        }
+        step = { type: "key", code: message.code, pressed: message.pressed };
+        break;
+    }
+    if (step) { this.steps.push(step); this.render(); }
+  }
+
+  private bind() {
+    this.panel.querySelector<HTMLButtonElement>("#macroClose")!.onclick = () => this.close();
+    this.panel.querySelector<HTMLButtonElement>("#macroRecord")!.onclick = () => {
+      if (!this.windowId) { this.onStatus("Sélectionnez une fenêtre avant d’enregistrer une macro"); return; }
+      this.recording = !this.recording;
+      this.syncRecordButton();
+    };
+    this.panel.querySelector<HTMLButtonElement>("#macroSave")!.onclick = () => this.save();
+    this.panel.querySelector<HTMLButtonElement>("#macroLoad")!.onclick = () => this.send({ type: "list_macros" });
+    this.panel.querySelector<HTMLButtonElement>("#macroTest")!.onclick = () => {
+      if (!this.windowId) return this.onStatus("Sélectionnez une fenêtre avant de tester");
+      if (!this.steps.length) return this.onStatus("La macro ne contient aucune étape");
+      this.recording = false;
+      this.syncRecordButton();
+      this.send({ type: "test_macro", steps: this.steps });
+      this.onStatus("Test de la macro en cours…");
+    };
+    this.panel.querySelector<HTMLSelectElement>("#macroLibrary")!.onchange = (event) => {
+      const option = (event.currentTarget as HTMLSelectElement).selectedOptions[0];
+      if (!option?.value) return;
+      this.send({ type: "load_macro", context: option.dataset.context ?? "", name: option.dataset.name ?? "" });
+    };
+  }
+
+  showLibrary(items: MacroSummary[]) {
+    const select = this.panel.querySelector<HTMLSelectElement>("#macroLibrary")!;
+    select.replaceChildren();
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = items.length ? `— ${items.length} macro(s) —` : "Aucune macro sauvegardée";
+    select.append(placeholder);
+    for (const item of items) {
+      const option = document.createElement("option");
+      option.value = `${item.context}::${item.name}`;
+      option.dataset.context = item.context;
+      option.dataset.name = item.name;
+      option.textContent = `[${item.context}] ${item.name} (${item.steps} étapes)`;
+      select.append(option);
+    }
+    select.hidden = false;
+    select.focus();
+  }
+
+  load(file: MacroFile) {
+    this.recording = false;
+    this.syncRecordButton();
+    this.steps = file.steps;
+    this.context = file.context;
+    this.panel.querySelector<HTMLElement>("#macroContext")!.textContent = file.context;
+    this.panel.querySelector<HTMLInputElement>("#macroName")!.value = file.name;
+    this.render();
+    this.onStatus(`macro ${file.name} chargée (${file.steps.length} étapes)`);
+  }
+
+  private syncRecordButton() {
+    const button = this.panel.querySelector<HTMLButtonElement>("#macroRecord")!;
+    button.classList.toggle("recording", this.recording);
+    button.textContent = this.recording ? "⏹ Arrêter l’enregistrement" : "⏺ Enregistrer une nouvelle action";
+  }
+
+  private save() {
+    const name = this.panel.querySelector<HTMLInputElement>("#macroName")!.value.trim();
+    if (!this.windowId) return this.onStatus("Aucune fenêtre active");
+    if (!name) return this.onStatus("Saisissez un nom de macro");
+    if (!this.steps.length) return this.onStatus("La macro ne contient aucune étape");
+    this.recording = false;
+    this.syncRecordButton();
+    this.send({ type: "save_macro", context: this.context, name, window_id: this.windowId, steps: this.steps });
+  }
+
+  private label(step: MacroStep): string {
+    switch (step.type) {
+      case "mouse_move": return `🖱 Déplacement — (${step.x.toFixed(3)}, ${step.y.toFixed(3)})`;
+      case "mouse_button": return `🖱 ${step.button} ${step.pressed ? "appui" : "relâchement"} — (${step.x.toFixed(3)}, ${step.y.toFixed(3)})`;
+      case "wheel": return `↕ Molette ${step.delta} — (${step.x.toFixed(3)}, ${step.y.toFixed(3)})`;
+      case "key": return `⌨ ${step.code} — ${step.pressed ? "appui" : "relâchement"}`;
+      case "text": return `⌨ Saisie texte — “${step.text}”`;
+    }
+  }
+
+  private render() {
+    const list = this.panel.querySelector<HTMLElement>("#macroSteps")!;
+    list.replaceChildren();
+    if (!this.steps.length) {
+      const empty = document.createElement("p"); empty.className = "macro-empty"; empty.textContent = "Aucune action enregistrée"; list.append(empty); return;
+    }
+    this.steps.forEach((step, index) => {
+      const card = document.createElement("article");
+      card.className = "macro-step";
+      card.draggable = true;
+      card.title = "Glisser pour déplacer cette étape";
+      card.addEventListener("dragstart", (event) => {
+        this.draggedIndex = index;
+        card.classList.add("dragging");
+        event.dataTransfer?.setData("text/plain", String(index));
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+      });
+      card.addEventListener("dragend", () => {
+        this.draggedIndex = null;
+        card.classList.remove("dragging");
+        list.querySelectorAll(".drag-over").forEach((node) => node.classList.remove("drag-over"));
+      });
+      card.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        if (this.draggedIndex !== null && this.draggedIndex !== index) card.classList.add("drag-over");
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      });
+      card.addEventListener("dragleave", () => card.classList.remove("drag-over"));
+      card.addEventListener("drop", (event) => {
+        event.preventDefault();
+        card.classList.remove("drag-over");
+        const from = this.draggedIndex ?? Number(event.dataTransfer?.getData("text/plain"));
+        if (!Number.isInteger(from) || from === index || from < 0 || from >= this.steps.length) return;
+        const [moved] = this.steps.splice(from, 1);
+        // En descendant, insère après la carte survolée ; en remontant, avant.
+        // Cette règle permet aussi d'échanger deux étapes adjacentes.
+        const destination = Math.min(index, this.steps.length);
+        this.steps.splice(destination, 0, moved);
+        this.draggedIndex = null;
+        this.render();
+      });
+      const label = document.createElement("span"); label.className = "macro-step-label"; label.textContent = `☰  ${index + 1}. ${this.label(step)}`;
+      const actions = document.createElement("span"); actions.className = "macro-step-actions";
+      const edit = document.createElement("button"); edit.textContent = "✎ Éditer"; edit.onclick = () => this.edit(card, index);
+      const duplicate = document.createElement("button"); duplicate.textContent = "⧉ Dupliquer"; duplicate.onclick = () => {
+        const copy = JSON.parse(JSON.stringify(this.steps[index])) as MacroStep;
+        this.steps.splice(index + 1, 0, copy);
+        this.render();
+      };
+      const del = document.createElement("button"); del.textContent = "✕ Suppr"; del.onclick = () => { this.steps.splice(index, 1); this.render(); };
+      for (const button of [edit, duplicate, del]) {
+        button.draggable = false;
+        button.addEventListener("mousedown", (event) => event.stopPropagation());
+      }
+      actions.append(edit, duplicate, del); card.append(label, actions); list.append(card);
+    });
+  }
+
+  private edit(card: HTMLElement, index: number) {
+    const area = document.createElement("textarea"); area.value = JSON.stringify(this.steps[index], null, 2); area.className = "macro-json-editor";
+    const save = document.createElement("button"); save.textContent = "Valider";
+    const error = document.createElement("small"); error.className = "macro-edit-error";
+    save.onclick = () => {
+      try {
+        const value = JSON.parse(area.value) as MacroStep;
+        if (!value || typeof value.type !== "string") throw new Error("type manquant");
+        this.steps[index] = value; this.render();
+      } catch (e) { error.textContent = `JSON invalide : ${e}`; }
+    };
+    card.replaceChildren(area, save, error);
+  }
+}

@@ -76,6 +76,7 @@
       .modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
       /* Bouton toggle actif (toolbar visible). */
       #toggleToolbar.active { background: #2f6fb3; border-color: #4a8fd6; color: #fff; }
+      #toggleMacros.active { background: #2f6fb3; border-color: #4a8fd6; color: #fff; }
       button {
         display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem;
         min-height: 2rem; padding: 0.35rem 0.7rem;
@@ -142,7 +143,38 @@
          #stage peut dépasser, l'alignement retombe sur "start" et le contenu
          reste atteignable au scroll (overflow: auto). En mode "Fit", le stage
          ne dépasse jamais : aucune barre de défilement. */
+      #workspace { flex: 1; display: flex; min-height: 0; min-width: 0; }
       main { flex: 1; display: grid; place-items: safe center; overflow: auto; padding: 0.75rem; min-height: 0; min-width: 0; }
+      #macroPanel {
+        flex: 0 0 410px; min-width: 330px; max-width: 42vw; min-height: 0;
+        display: flex; flex-direction: column; background: #191c22;
+        border-left: 1px solid #343944; box-shadow: -8px 0 24px rgba(0,0,0,.22);
+      }
+      #macroPanel[hidden] { display: none; }
+      .macro-head { display:flex; align-items:center; justify-content:space-between; padding:.8rem; border-bottom:1px solid #343944; }
+      .macro-head h2 { margin:0; font-size:1rem; letter-spacing:.3px; }
+      #macroRecord { margin:.9rem; padding:.75rem; color:#fff; background:#c83d43; border-color:#e45459; }
+      #macroRecord.recording { background:#7a2626; }
+      .macro-library { display:flex; gap:.45rem; padding:0 .9rem .7rem; }
+      .macro-library select { flex:1; min-width:0; }
+      #macroTest { margin:0 .9rem .8rem; padding:.65rem; background:#2f6fb3; border-color:#4a8fd6; color:#fff; }
+      #macroSteps { flex:1; min-height:120px; overflow:auto; padding:0 .7rem .7rem; }
+      .macro-step { display:flex; align-items:flex-start; justify-content:space-between; gap:.5rem; margin:.5rem 0; padding:.75rem; background:#262a33; border:1px solid #3a404c; border-left:4px solid #626a78; border-radius:7px; font-size:.84rem; }
+      .macro-step[draggable="true"] { cursor: grab; }
+      .macro-step[draggable="true"]:active { cursor: grabbing; }
+      .macro-step.dragging { opacity:.4; }
+      .macro-step.drag-over { border-top:3px solid #4a8fd6; transform:translateY(2px); }
+      .macro-step-label { flex:1; min-width:0; line-height:1.45; }
+      .macro-step-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.25rem; }
+      .macro-step-actions button { min-height:1.6rem; padding:.2rem .35rem; font-size:.72rem; }
+      .macro-empty { opacity:.55; text-align:center; margin-top:2rem; }
+      .macro-json-editor { width:100%; min-height:130px; box-sizing:border-box; color:#e6e6e6; background:#0f1114; border:1px solid #4a505c; border-radius:4px; }
+      .macro-edit-error { color:#ff8585; }
+      .macro-footer { padding:.9rem; border-top:1px solid #343944; display:flex; flex-direction:column; gap:.55rem; }
+      .macro-footer label { font-size:.72rem; font-weight:700; letter-spacing:.4px; }
+      #macroName { width:100%; box-sizing:border-box; }
+      #macroSave { padding:.7rem; background:#269b4c; border-color:#35b85f; color:#fff; }
+      @media (max-width: 850px) { #macroPanel { position:fixed; z-index:20; right:0; top:0; bottom:0; max-width:100vw; width:min(410px,100vw); } }
       /* #stage est dimensionné en px par main.ts (ajustement letterbox) ;
          canvas et SVG le remplissent exactement, donc l'overlay est toujours
          aligné pixel à pixel sur la vidéo. */
@@ -271,6 +303,7 @@
         <button id="openSettings" title="Stream, capture &amp; input settings">⚙ Settings</button>
         <button id="shot" title="Save the current frame as JPEG">📷 Capture</button>
         <button id="rec" title="Record a sequence of images (JPEG)">⏺ REC</button>
+        <button id="toggleMacros" title="Show / hide macro workflows">⚙⚙ Macro</button>
       </div>
 
       <span id="status">disconnected</span>
@@ -303,6 +336,7 @@
       <button id="slicesJsonBtn" hidden title="Copy slice zones (native px) as JSON">⧉ Zones JSON</button>
     </div>
 
+    <div id="workspace">
     <main>
       <div id="stage" data-tool="cursor">
         <canvas id="screen" width="1280" height="720" tabindex="0"></canvas>
@@ -313,6 +347,25 @@
         <div id="coordChip"></div>
       </div>
     </main>
+    <aside id="macroPanel" hidden aria-label="Macro configuration">
+      <div class="macro-head">
+        <h2>MACROS CONFIG — [<span id="macroContext">aucune fenêtre</span>]</h2>
+        <button id="macroClose" title="Fermer le panneau">Close [X]</button>
+      </div>
+      <button id="macroRecord">⏺ Enregistrer une nouvelle action</button>
+      <div class="macro-library">
+        <button id="macroLoad">📂 Load Macro</button>
+        <select id="macroLibrary" hidden aria-label="Macros sauvegardées"></select>
+      </div>
+      <button id="macroTest">▶ Test Macro</button>
+      <section id="macroSteps" aria-live="polite"></section>
+      <div class="macro-footer">
+        <label for="macroName">NOM DE LA MACRO :</label>
+        <input id="macroName" type="text" value="bypass_login_v1" maxlength="120" />
+        <button id="macroSave">💾 Sauvegarder la Macro Workflow</button>
+      </div>
+    </aside>
+    </div>
     <!-- Confirm Close Modal -->
     <div id="confirmCloseModal" style="display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); z-index: 1100; align-items: center; justify-content: center;">
       <div style="background: #1d2026; padding: 2rem; border-radius: 8px; border: 1px solid #3a3f49; width: 380px; text-align: center; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.6); font-family: system-ui, sans-serif;">
