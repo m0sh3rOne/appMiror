@@ -262,16 +262,26 @@ async fn run_step(
 /// Séquences à tenter, dans l'ordre. Une séquence explicite sur la zone prime ;
 /// sinon `Auto` déplie les replis classiques (le scénario « le clic ne fait que
 /// sélectionner, Entrée valide » est couvert par la 2e tentative).
-fn planned_attempts(zone: &LayoutZone, strategy: Strategy) -> Vec<(String, Vec<ActivationStep>)> {
+fn planned_attempts(zone: &LayoutZone, strategy: Strategy, preferred: Option<&str>) -> Vec<(String, Vec<ActivationStep>)> {
     if let Some(steps) = &zone.activation {
         return vec![("configured".into(), steps.clone())];
     }
     match strategy {
-        Strategy::Auto => vec![
-            ("click".into(), Strategy::Click.sequence()),
-            ("click_then_enter".into(), Strategy::ClickThenEnter.sequence()),
-            ("double_click".into(), Strategy::DoubleClick.sequence()),
-        ],
+        Strategy::Auto => {
+            if preferred.is_some_and(|p| p.eq_ignore_ascii_case("keyboard")) {
+                vec![
+                    ("click_then_enter".into(), Strategy::ClickThenEnter.sequence()),
+                    ("click".into(), Strategy::Click.sequence()),
+                    ("double_click".into(), Strategy::DoubleClick.sequence()),
+                ]
+            } else {
+                vec![
+                    ("click".into(), Strategy::Click.sequence()),
+                    ("click_then_enter".into(), Strategy::ClickThenEnter.sequence()),
+                    ("double_click".into(), Strategy::DoubleClick.sequence()),
+                ]
+            }
+        }
         Strategy::Click => vec![("click".into(), Strategy::Click.sequence())],
         Strategy::ClickThenEnter => vec![("click_then_enter".into(), Strategy::ClickThenEnter.sequence())],
         Strategy::DoubleClick => vec![("double_click".into(), Strategy::DoubleClick.sequence())],
@@ -319,6 +329,7 @@ pub async fn activate_element(
     text: Option<&str>,
 ) -> Result<Value, String> {
     let (file, zone) = resolve_zone(layouts, layout, element)?;
+    let profile = crate::profile_store::load_or_default(&file.context).await;
     let (width, height) = input::client_size(target.id)
         .ok_or_else(|| format!("fenêtre cible {} introuvable", target.id))?;
     target.width = width;
@@ -346,7 +357,7 @@ pub async fn activate_element(
         None => None,
     };
 
-    let attempts = planned_attempts(zone, strategy);
+    let attempts = planned_attempts(zone, strategy, Some(&profile.preferred_activation));
     let mut reports: Vec<Value> = Vec::new();
     let mut verified = false;
 

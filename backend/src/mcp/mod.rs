@@ -17,9 +17,10 @@ use serde_json::{json, Value};
 
 use crate::app::{AppState, AttachedWindow};
 use crate::protocol::{
-    AttachArgs, CancelExecutionArgs, ExecuteWorkflowArgs, GetExecutionStatusArgs, GetLayoutArgs,
-    InjectAction, InjectArgs, LayoutFile, LayoutZoneKind, ListLayoutsArgs, McpError, McpMethod,
-    McpRequest, McpResponse, MouseButton, PlayMacroArgs, SaveMacroArgs, SaveWorkflowArgs,
+    AttachArgs, CancelExecutionArgs, ExecuteWorkflowArgs, GetAppProfileArgs, GetExecutionStatusArgs,
+    GetLayoutArgs, InjectAction, InjectArgs, LayoutFile, LayoutZoneKind, ListLayoutsArgs, McpError,
+    McpMethod, McpRequest, McpResponse, MouseButton, PlayMacroArgs, SaveMacroArgs, SaveWorkflowArgs,
+    SetAppProfileArgs,
 };
 use crate::{capture, input, recorder};
 
@@ -417,6 +418,33 @@ fn tool_definitions() -> Value {
                 "required": ["execution_id"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "set_app_profile",
+            "description": "Définit ou met à jour le profil de capacités d'injection d'une application (ex: foreground_required, preferred_activation).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "context": { "type": "string" },
+                    "foreground_required": { "type": "boolean" },
+                    "preferred_activation": { "type": "string", "enum": ["auto", "click", "keyboard"] },
+                    "background_mouse": { "type": "string", "enum": ["supported", "partial", "unsupported"] },
+                    "background_keyboard": { "type": "string", "enum": ["supported", "partial", "unsupported"] },
+                    "pause_on_focus_loss": { "type": "boolean" }
+                },
+                "required": ["context"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "get_app_profile",
+            "description": "Rapporte le profil de capacités d'injection enregistré pour une application.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "context": { "type": "string" } },
+                "required": ["context"],
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -457,6 +485,8 @@ async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> 
         "execute_workflow" => tool_execute_workflow(args, state).await.map(|t| json!([ { "type": "text", "text": t } ])),
         "get_execution_status" => tool_get_execution_status(args, state).map(|v| json!([ { "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() } ])),
         "cancel_execution" => tool_cancel_execution(args, state).map(|t| json!([ { "type": "text", "text": t } ])),
+        "set_app_profile" => tool_set_app_profile(args).await.map(|t| json!([ { "type": "text", "text": t } ])),
+        "get_app_profile" => tool_get_app_profile(args, state).await.map(|v| json!([ { "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() } ])),
         other => return Err(McpError { code: -32602, message: format!("outil inconnu: {other}") }),
     };
 
@@ -524,6 +554,24 @@ fn tool_cancel_execution(args: Value, state: &AppState) -> Result<String, String
     }
 }
 
+async fn tool_set_app_profile(args: Value) -> Result<String, String> {
+    let parsed: SetAppProfileArgs = serde_json::from_value(args).map_err(|e| format!("arguments invalides: {e}"))?;
+    let mut profile = crate::profile_store::load_or_default(&parsed.context).await;
+    if let Some(v) = parsed.foreground_required { profile.foreground_required = v; }
+    if let Some(v) = parsed.preferred_activation { profile.preferred_activation = v; }
+    if let Some(v) = parsed.background_mouse { profile.background_mouse = v; }
+    if let Some(v) = parsed.background_keyboard { profile.background_keyboard = v; }
+    if let Some(v) = parsed.pause_on_focus_loss { profile.pause_on_focus_loss = v; }
+    let path = crate::profile_store::save(&profile).await?;
+    Ok(format!("profil d'application pour '{}' sauvegardé ({})", profile.context, path.display()))
+}
+
+async fn tool_get_app_profile(args: Value, _state: &AppState) -> Result<Value, String> {
+    let parsed: GetAppProfileArgs = serde_json::from_value(args).map_err(|e| format!("arguments invalides: {e}"))?;
+    let profile = crate::profile_store::load_or_default(&parsed.context).await;
+    Ok(serde_json::to_value(profile).unwrap_or_default())
+}
+
 /// Contexte explicite ou déduit de la fenêtre attachée.
 fn context_or_attached(args: &Value, state: &AppState) -> Result<String, String> {
     match args.get("context").and_then(Value::as_str) {
@@ -534,6 +582,7 @@ fn context_or_attached(args: &Value, state: &AppState) -> Result<String, String>
 
 async fn tool_describe_context(args: Value, state: &AppState) -> Result<Value, String> {
     let context = context_or_attached(&args, state)?;
+    let profile = crate::profile_store::load_or_default(&context).await;
     let layouts = crate::layout_store::list(Some(&context)).await.unwrap_or_default();
     let states = crate::state_store::list(Some(&context)).await.unwrap_or_default();
     let macros: Vec<_> = crate::macro_store::list()
@@ -547,12 +596,14 @@ async fn tool_describe_context(args: Value, state: &AppState) -> Result<Value, S
     let workflows = crate::workflow_store::list().await.unwrap_or_default();
     Ok(json!({
         "context": context,
+        "profile": profile,
         "layouts": layouts,
         "states": states,
         "macros": macros,
         "workflows": workflows,
         "workflowsNote": "liste globale; la cible d'un workflow est définie par son nœud START (voir get_workflow)",
         "authoring": {
+            "profile": "set_app_profile configure les capacités d'injection (ex: foreground_required, preferred_activation)",
             "layouts": "save_layout crée/remplace un layout; l'utilisateur peut ensuite l'éditer dans le panneau Layout",
             "states": "capture_ui_state hashe l'écran courant pour le rendre reconnaissable (get_application_state, wait_for_ui_state, detect_layout)",
             "macros": "save_macro persiste une séquence d'étapes; get_macro pour relire/modifier",
@@ -1039,6 +1090,7 @@ fn tool_launch(args: Value, state: &AppState) -> Result<String, String> {
         Vec::new()
     };
 
+    #[allow(unused_variables)]
     let allow_virtual = {
         let cfg_opt = state.config.lock().unwrap();
         if let Some(cfg_mutex) = &*cfg_opt {

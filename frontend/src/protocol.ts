@@ -154,6 +154,15 @@ export interface ExecutionRecord {
   errorMessage?: string | null;
 }
 
+export interface AppProfile {
+  context: string;
+  foregroundRequired: boolean;
+  preferredActivation: string;
+  backgroundMouse: string;
+  backgroundKeyboard: string;
+  pauseOnFocusLoss: boolean;
+}
+
 export type ServerMessage =
   | { type: "windows"; items: WindowInfo[] }
   | { type: "selected"; width: number; height: number; background: boolean }

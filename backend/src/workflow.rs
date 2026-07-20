@@ -147,10 +147,14 @@ pub async fn run_full(
 
             let output = match &node.data {
                 WorkflowNodeData::Start(data) => {
-                    active_target = Some(resolve_start_target(data, active_target).await.map_err(|e| (Some(node.id.clone()), e))?);
-                    force_foreground = data.focus
-                        && data.execution_mode == AppExecutionMode::MainDesktop
-                        && !matches!(effective_target_kind(data), StartTargetKind::MainDesktop | StartTargetKind::VirtualDesktop);
+                    let target = resolve_start_target(data, active_target).await.map_err(|e| (Some(node.id.clone()), e))?;
+                    let context = resolve_window_context(target.id);
+                    let profile = crate::profile_store::load_or_default(&context).await;
+                    force_foreground = profile.foreground_required
+                        || (data.focus
+                            && data.execution_mode == AppExecutionMode::MainDesktop
+                            && !matches!(effective_target_kind(data), StartTargetKind::MainDesktop | StartTargetKind::VirtualDesktop));
+                    active_target = Some(target);
                     WorkflowHandle::Next
                 }
                 WorkflowNodeData::Macro(data) => {

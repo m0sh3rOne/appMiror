@@ -18,6 +18,7 @@ mod mcp;
 mod protocol;
 mod recorder;
 mod server;
+mod profile_store;
 mod state_store;
 #[cfg(feature = "webrtc")]
 mod h264;

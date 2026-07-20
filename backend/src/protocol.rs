@@ -590,6 +590,25 @@ pub struct ExecutionRecord {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppProfile {
+    pub context: String,
+    #[serde(default)]
+    pub foreground_required: bool,
+    #[serde(default = "default_auto")]
+    pub preferred_activation: String,
+    #[serde(default = "default_supported")]
+    pub background_mouse: String,
+    #[serde(default = "default_supported")]
+    pub background_keyboard: String,
+    #[serde(default)]
+    pub pause_on_focus_loss: bool,
+}
+
+fn default_auto() -> String { "auto".to_string() }
+fn default_supported() -> String { "supported".to_string() }
+
 // ============================================================================
 // MCP (Model Context Protocol) — enveloppe JSON-RPC 2.0.
 //
@@ -752,6 +771,7 @@ pub struct ExecuteWorkflowArgs {
     #[serde(default)]
     pub observe: bool,
     #[serde(default)]
+    #[allow(dead_code)]
     pub parameters: std::collections::HashMap<String, String>,
 }
 
@@ -789,4 +809,26 @@ pub struct GetLayoutArgs {
     pub context: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAppProfileArgs {
+    pub context: String,
+    #[serde(default)]
+    pub foreground_required: Option<bool>,
+    #[serde(default)]
+    pub preferred_activation: Option<String>,
+    #[serde(default)]
+    pub background_mouse: Option<String>,
+    #[serde(default)]
+    pub background_keyboard: Option<String>,
+    #[serde(default)]
+    pub pause_on_focus_loss: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAppProfileArgs {
+    pub context: String,
 }
