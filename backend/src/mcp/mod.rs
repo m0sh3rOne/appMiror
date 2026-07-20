@@ -67,6 +67,73 @@ fn initialize_result() -> Value {
     })
 }
 
+/// JSON Schema d'une zone de layout. Décrit fidèlement les contraintes que le
+/// backend applique réellement (énumérations fermées, formes des étapes
+/// d'activation) : un agent ne doit jamais découvrir une contrainte par un
+/// message d'erreur.
+fn zone_schema() -> Value {
+    let delay = json!({ "type": "integer", "minimum": 0, "maximum": 60000, "description": "Pause après cette étape, en ms. Défaut: profil applicatif, sinon 60 ms." });
+    let hold = json!({ "type": "integer", "minimum": 0, "maximum": 5000, "description": "Durée de maintien de la touche en ms; certaines applications ignorent un appui instantané." });
+    json!({
+        "type": "object",
+        "required": ["id", "name", "kind", "bounds"],
+        "properties": {
+            "id": { "type": "string", "description": "Identifiant stable dans le layout (référencé par les ancres)." },
+            "name": { "type": "string", "description": "Nom interne, utilisable comme sélecteur." },
+            "kind": { "type": "string", "enum": crate::protocol::LayoutZoneKind::ALL },
+            "label": { "type": "string", "description": "Texte visible à l'écran; utilisable comme sélecteur." },
+            "description": { "type": "string", "description": "Usage de la zone, à destination de l'agent." },
+            "bounds": {
+                "type": "object",
+                "required": ["x", "y", "width", "height"],
+                "description": "Coordonnées normalisées [0,1] relatives à la zone client de la fenêtre.",
+                "properties": {
+                    "x": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "y": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+                    "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+                },
+                "additionalProperties": false
+            },
+            "expectedState": {
+                "type": "string",
+                "description": "État attendu après activation. Dès qu'il est renseigné, il devient la SEULE autorité de validation d'activate_ui_element — capturez-le avec capture_ui_state, sinon l'activation échouera explicitement."
+            },
+            "anchor": {
+                "type": "object",
+                "required": ["relativeTo"],
+                "description": "Position relative à une autre zone plutôt qu'absolue.",
+                "properties": {
+                    "relativeTo": { "type": "string", "description": "id de la zone de référence (pas de cycle)." },
+                    "dx": { "type": "number", "minimum": -1, "maximum": 1 },
+                    "dy": { "type": "number", "minimum": -1, "maximum": 1 }
+                },
+                "additionalProperties": false
+            },
+            "activation": {
+                "type": "array",
+                "maxItems": 10,
+                "description": "Séquence d'activation exécutée dans l'ordre. Si absente, la stratégie auto essaie clic, puis clic+Entrée temporisé, puis double-clic.",
+                "items": {
+                    "type": "object",
+                    "required": ["type"],
+                    "oneOf": [
+                        { "properties": { "type": { "const": "click_center" }, "delayAfterMs": delay }, "additionalProperties": false },
+                        { "properties": { "type": { "const": "click" }, "delayAfterMs": delay }, "additionalProperties": false },
+                        { "properties": { "type": { "const": "double_click" }, "delayAfterMs": delay }, "additionalProperties": false },
+                        { "properties": { "type": { "const": "key" }, "code": { "type": "string", "description": "KeyboardEvent.code, ex. Enter, ArrowDown." }, "holdMs": hold, "delayAfterMs": delay }, "required": ["code"], "additionalProperties": false },
+                        { "properties": { "type": { "const": "focus_then_key" }, "code": { "type": "string" }, "holdMs": hold, "delayAfterMs": delay }, "required": ["code"], "additionalProperties": false },
+                        { "properties": { "type": { "const": "type_text" }, "delayAfterMs": delay }, "additionalProperties": false },
+                        { "properties": { "type": { "const": "wait_for_state" }, "state": { "type": "string" }, "timeoutMs": { "type": "integer", "minimum": 0, "maximum": 60000 } }, "required": ["state"], "additionalProperties": false },
+                        { "properties": { "type": { "const": "wait_ms" }, "durationMs": { "type": "integer", "minimum": 0, "maximum": 60000 } }, "required": ["durationMs"], "additionalProperties": false }
+                    ]
+                }
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
 /// Déclaration des outils exposés au LLM (JSON Schema des arguments).
 fn tool_definitions() -> Value {
     json!([
@@ -209,7 +276,12 @@ fn tool_definitions() -> Value {
                     "layout": { "type": "string", "description": "Nom du layout; sinon recherche dans tous les layouts du contexte." },
                     "context": { "type": "string", "description": "Contexte applicatif; déduit de la fenêtre attachée si absent." },
                     "strategy": { "type": "string", "enum": ["auto", "click", "click_then_enter", "double_click"], "description": "auto (défaut) enchaîne les replis; sinon force une stratégie unique." },
-                    "verify": { "type": "boolean", "description": "Vérifier le changement d'écran après activation (défaut true)." }
+                    "verify": { "type": "boolean", "description": "false désactive toute vérification (défaut true)." },
+                    "verification": {
+                        "type": "string",
+                        "enum": ["state", "screen_change", "none"],
+                        "description": "Autorité de validation. Défaut: 'state' si la zone déclare un expectedState (seule la détection de cet état vaut succès), sinon 'screen_change' — vérification FAIBLE qui peut confondre un simple surlignage avec une navigation réussie. 'state' échoue explicitement si l'état n'a pas encore été capturé."
+                    }
                 },
                 "required": ["element"],
                 "additionalProperties": false
@@ -253,8 +325,8 @@ fn tool_definitions() -> Value {
                     "source_height": { "type": "integer", "description": "Hauteur client de référence; taille de la fenêtre attachée si absent." },
                     "zones": {
                         "type": "array",
-                        "items": { "type": "object" },
-                        "description": "Zones au format LayoutZone: { id, name, kind, bounds:{x,y,width,height}, label?, description?, activation?, expectedState?, anchor? }."
+                        "items": zone_schema(),
+                        "description": "Zones du layout. Le champ 'kind' est une énumération fermée: voir items.properties.kind.enum."
                     }
                 },
                 "required": ["name", "zones"],
@@ -271,8 +343,8 @@ fn tool_definitions() -> Value {
                     "layout": { "type": "string", "description": "Layout dont les zones servent de signatures; requis si 'zones' absent." },
                     "zones": {
                         "type": "array",
-                        "items": { "type": "object" },
-                        "description": "Zones explicites à hasher (format LayoutZone); sinon celles du layout."
+                        "items": zone_schema(),
+                        "description": "Zones explicites à hasher; sinon celles du layout."
                     },
                     "context": { "type": "string", "description": "Contexte applicatif; déduit de la fenêtre attachée si absent." }
                 },
@@ -1256,12 +1328,19 @@ async fn tool_activate(args: Value, state: &AppState) -> Result<Value, String> {
     let layout = args.get("layout").and_then(Value::as_str);
     let strategy = crate::activate::Strategy::parse(args.get("strategy").and_then(Value::as_str))?;
     let verify = args.get("verify").and_then(Value::as_bool).unwrap_or(true);
+    let verification = match args.get("verification").and_then(Value::as_str) {
+        None => None,
+        Some("state") => Some(crate::protocol::Verification::State),
+        Some("screen_change") => Some(crate::protocol::Verification::ScreenChange),
+        Some("none") => Some(crate::protocol::Verification::None),
+        Some(other) => return Err(format!("verification inconnue: {other} (state|screen_change|none)")),
+    };
     let context = layouts.first().map(|l| l.context.clone());
     let states = match &context {
         Some(context) => crate::state_store::load_context(context).await.unwrap_or_default(),
         None => Vec::new(),
     };
-    crate::activate::activate_element(target, &layouts, &states, layout, element, strategy, verify, None).await
+    crate::activate::activate_element(target, &layouts, &states, layout, element, strategy, verify, None, verification).await
 }
 
 /// Contexte + états enregistrés, mutualisés par les outils de détection.
@@ -1390,7 +1469,13 @@ fn layout_agent_view(layout: &LayoutFile) -> Value {
             | LayoutZoneKind::Menu
             | LayoutZoneKind::Checkbox
             | LayoutZoneKind::Radio
-            | LayoutZoneKind::Link => "click",
+            | LayoutZoneKind::Link
+            | LayoutZoneKind::Toggle
+            | LayoutZoneKind::Tab
+            | LayoutZoneKind::DialogAction => "click",
+            // Un curseur/incrémenteur se manipule au drag ou aux flèches,
+            // pas par un simple clic au centre.
+            LayoutZoneKind::Slider | LayoutZoneKind::Stepper => "drag_or_arrows",
             LayoutZoneKind::Text | LayoutZoneKind::Region => "inspect",
         };
         json!({

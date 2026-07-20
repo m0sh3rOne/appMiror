@@ -200,6 +200,7 @@ pub async fn run_full(
                             strategy,
                             data.verify,
                             None,
+                            data.verification,
                         ).await {
                             Ok(_) => {
                                 success = true;

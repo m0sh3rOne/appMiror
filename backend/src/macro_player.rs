@@ -108,9 +108,10 @@ pub async fn play_full(
                 let text = subst(text, &values).map_err(step_err)?;
                 if mode == InjectionMode::Background { input::text_bg(target.id, &text) } else { input::text(Some(target.id), &text); }
             }
-            MacroStep::ActivateElement { element, layout, strategy, verify } => {
+            MacroStep::ActivateElement { element, layout, strategy, verify, verification } => {
                 let element = subst(element, &values).map_err(step_err)?;
                 let strategy = crate::activate::Strategy::parse(strategy.as_deref()).map_err(step_err)?;
+                let verification = *verification;
                 if semantic.is_none() { semantic = Some(semantic_context(&file.context).await); }
                 let ctx = semantic.as_ref().unwrap();
                 crate::activate::activate_element(
@@ -122,6 +123,7 @@ pub async fn play_full(
                     strategy,
                     verify.unwrap_or(true),
                     None,
+                    verification,
                 )
                 .await
                 .map_err(|e| {

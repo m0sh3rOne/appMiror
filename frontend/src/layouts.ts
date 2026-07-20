@@ -3,21 +3,27 @@ import type { Annotator } from "./annotate";
 
 type ActivationKind = ActivationStep["type"];
 
-const ACTIVATION_KINDS: Array<{ value: ActivationKind; label: string; needsCode: boolean }> = [
-  { value: "click_center", label: "Click center", needsCode: false },
-  { value: "double_click", label: "Double click", needsCode: false },
-  { value: "key", label: "Key press", needsCode: true },
-  { value: "focus_then_key", label: "Focus + key", needsCode: true },
-  { value: "type_text", label: "Type text (runtime)", needsCode: false },
+/** "text" = free text argument (key code or state name), not a key code only. */
+const ACTIVATION_KINDS: Array<{ value: ActivationKind; label: string; arg: "none" | "code" | "state" | "duration" }> = [
+  { value: "click_center", label: "Click center", arg: "none" },
+  { value: "double_click", label: "Double click", arg: "none" },
+  { value: "key", label: "Key press", arg: "code" },
+  { value: "focus_then_key", label: "Focus + key", arg: "code" },
+  { value: "type_text", label: "Type text (runtime)", arg: "none" },
+  { value: "wait_for_state", label: "Wait for state", arg: "state" },
+  { value: "wait_ms", label: "Wait (ms)", arg: "duration" },
 ];
 
 function activationLabel(step: ActivationStep): string {
+  const after = "delayAfterMs" in step && step.delayAfterMs ? ` +${step.delayAfterMs}ms` : "";
   switch (step.type) {
-    case "click_center": return "click center";
-    case "double_click": return "double click";
-    case "key": return `key ${step.code}`;
-    case "focus_then_key": return `focus + ${step.code}`;
-    case "type_text": return "type text";
+    case "click_center": return `click center${after}`;
+    case "double_click": return `double click${after}`;
+    case "key": return `key ${step.code}${step.holdMs ? ` (hold ${step.holdMs}ms)` : ""}${after}`;
+    case "focus_then_key": return `focus + ${step.code}${step.holdMs ? ` (hold ${step.holdMs}ms)` : ""}${after}`;
+    case "type_text": return `type text${after}`;
+    case "wait_for_state": return `wait for “${step.state}” (≤${step.timeoutMs ?? 3000}ms)`;
+    case "wait_ms": return `wait ${step.durationMs}ms`;
   }
 }
 
@@ -32,6 +38,11 @@ const ZONE_KINDS: Array<{ value: LayoutZoneKind; label: string }> = [
   { value: "link", label: "Link" },
   { value: "text", label: "Text / label" },
   { value: "region", label: "Generic region" },
+  { value: "toggle", label: "Toggle switch" },
+  { value: "slider", label: "Slider" },
+  { value: "stepper", label: "Stepper (± value)" },
+  { value: "tab", label: "Tab" },
+  { value: "dialog_action", label: "Dialog action" },
 ];
 
 export class LayoutController {
@@ -381,34 +392,67 @@ export class LayoutController {
     const kindSelect = document.createElement("select");
     kindSelect.title = "Activation step to append";
     for (const item of ACTIVATION_KINDS) kindSelect.add(new Option(item.label, item.value));
-    const code = document.createElement("input");
-    code.type = "text";
-    code.placeholder = "Key code (e.g. Enter)";
-    code.maxLength = 40;
-    const syncCode = () => {
-      const needsCode = ACTIVATION_KINDS.find((item) => item.value === kindSelect.value)?.needsCode ?? false;
-      code.hidden = !needsCode;
+    const arg = document.createElement("input");
+    arg.type = "text";
+    arg.maxLength = 120;
+    // Maintien de la touche: certaines applications (jeux) ignorent un appui
+    // instantané et n'enregistrent la frappe qu'au-delà d'une centaine de ms.
+    const hold = document.createElement("input");
+    hold.type = "number";
+    hold.min = "0";
+    hold.max = "5000";
+    hold.placeholder = "hold ms";
+    hold.title = "Key hold duration in ms (blank = application profile default)";
+    const delay = document.createElement("input");
+    delay.type = "number";
+    delay.min = "0";
+    delay.max = "60000";
+    delay.placeholder = "delay ms";
+    delay.title = "Pause after this step, in ms (blank = application profile default)";
+    const syncArg = () => {
+      const spec = ACTIVATION_KINDS.find((item) => item.value === kindSelect.value);
+      const kind = spec?.arg ?? "none";
+      arg.hidden = kind === "none";
+      arg.placeholder = kind === "code" ? "Key code (e.g. Enter)" : kind === "state" ? "State name" : "Duration in ms";
+      arg.type = kind === "duration" ? "number" : "text";
+      hold.hidden = kind !== "code";
+      delay.hidden = kindSelect.value === "wait_for_state" || kindSelect.value === "wait_ms";
     };
-    kindSelect.addEventListener("change", syncCode);
-    syncCode();
+    kindSelect.addEventListener("change", syncArg);
+    syncArg();
     const add = document.createElement("button");
     add.textContent = "+ Step";
     add.title = "Append this step to the activation sequence";
     add.addEventListener("click", () => {
       const kind = kindSelect.value as ActivationKind;
-      const needsCode = ACTIVATION_KINDS.find((item) => item.value === kind)?.needsCode ?? false;
-      const keyCode = code.value.trim();
-      if (needsCode && !keyCode) {
-        this.status("A key code is required for this activation step.");
-        code.focus();
+      const spec = ACTIVATION_KINDS.find((item) => item.value === kind);
+      const value = arg.value.trim();
+      if (spec && spec.arg !== "none" && !value) {
+        this.status(`This activation step requires a ${spec.arg === "code" ? "key code" : spec.arg}.`);
+        arg.focus();
         return;
       }
-      const step: ActivationStep = needsCode
-        ? { type: kind as "key" | "focus_then_key", code: keyCode }
-        : { type: kind as "click_center" | "double_click" | "type_text" };
+      const delayAfterMs = delay.value.trim() ? Number(delay.value) : undefined;
+      const holdMs = hold.value.trim() ? Number(hold.value) : undefined;
+      let step: ActivationStep;
+      switch (kind) {
+        case "key":
+        case "focus_then_key":
+          step = { type: kind, code: value, holdMs, delayAfterMs };
+          break;
+        case "wait_for_state":
+          step = { type: kind, state: value, timeoutMs: 3000 };
+          break;
+        case "wait_ms":
+          step = { type: kind, durationMs: Number(value) || 500 };
+          break;
+        default:
+          step = { type: kind, delayAfterMs };
+      }
       this.annotator.updateLayoutZone(zone.id, { activation: [...steps, step] });
+      arg.value = "";
     });
-    controls.append(kindSelect, code, add);
+    controls.append(kindSelect, arg, hold, delay, add);
 
     box.append(chips, controls);
     return box;

@@ -54,7 +54,7 @@ export type MacroStep =
   | { type: "wheel"; delta: number; x: number; y: number }
   | { type: "key"; code: string; pressed: boolean }
   | { type: "text"; text: string }
-  | { type: "activate_element"; element: string; layout?: string | null; strategy?: string | null; verify?: boolean | null }
+  | { type: "activate_element"; element: string; layout?: string | null; strategy?: string | null; verify?: boolean | null; verification?: Verification | null }
   | { type: "type_into_element"; element: string; text: string; layout?: string | null }
   | { type: "wait_for_state"; state: string; timeout_ms?: number | null }
   | { type: "wait_ms"; duration_ms: number }
@@ -80,14 +80,20 @@ export interface MacroFile {
 
 export interface MacroSummary { context: string; name: string; steps: number }
 
-export type LayoutZoneKind = "button" | "input" | "textarea" | "dropdown" | "menu" | "checkbox" | "radio" | "link" | "text" | "region";
+export type LayoutZoneKind =
+  | "button" | "input" | "textarea" | "dropdown" | "menu" | "checkbox" | "radio" | "link" | "text" | "region"
+  | "toggle" | "slider" | "stepper" | "tab" | "dialog_action";
 export interface NormalizedBounds { x: number; y: number; width: number; height: number }
+/** Autorité de validation d'une activation (voir backend/src/activate.rs). */
+export type Verification = "state" | "screen_change" | "none";
 export type ActivationStep =
-  | { type: "click_center" }
-  | { type: "double_click" }
-  | { type: "key"; code: string }
-  | { type: "focus_then_key"; code: string }
-  | { type: "type_text" };
+  | { type: "click_center"; delayAfterMs?: number | null }
+  | { type: "double_click"; delayAfterMs?: number | null }
+  | { type: "key"; code: string; holdMs?: number | null; delayAfterMs?: number | null }
+  | { type: "focus_then_key"; code: string; holdMs?: number | null; delayAfterMs?: number | null }
+  | { type: "type_text"; delayAfterMs?: number | null }
+  | { type: "wait_for_state"; state: string; timeoutMs?: number | null }
+  | { type: "wait_ms"; durationMs: number };
 export interface ZoneAnchor { relativeTo: string; dx: number; dy: number }
 export interface LayoutZone {
   id: string;

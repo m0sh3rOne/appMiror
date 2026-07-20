@@ -198,6 +198,10 @@ pub enum MacroStep {
         strategy: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         verify: Option<bool>,
+        /// Autorité de validation; par défaut `state` si la zone déclare un
+        /// expectedState, sinon `screen_change`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verification: Option<Verification>,
     },
     /// Clique sur un élément puis y tape le texte (substituable).
     TypeIntoElement {
@@ -308,13 +312,76 @@ pub struct LayoutZone {
 /// Étape d'activation d'une zone. `TypeText` consomme le texte fourni à
 /// l'exécution (type_into_ui_element); les autres étapes sont autonomes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum ActivationStep {
-    ClickCenter,
-    DoubleClick,
-    Key { code: String },
-    FocusThenKey { code: String },
-    TypeText,
+    // Note: `rename_all = "snake_case"` ne s'applique qu'aux *variantes*; les
+    // champs ont besoin de `rename_all_fields` pour suivre le camelCase du
+    // reste du protocole (LayoutZone, ZoneAnchor…). Sans cela `holdMs` et
+    // `delayAfterMs` étaient silencieusement ignorés.
+    /// `click` est un alias : les deux nomment le clic au centre de la zone.
+    #[serde(alias = "click")]
+    ClickCenter {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delay_after_ms: Option<u64>,
+    },
+    DoubleClick {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delay_after_ms: Option<u64>,
+    },
+    Key {
+        code: String,
+        /// Durée de maintien de la touche; certaines applications ignorent un
+        /// appui/relâche instantané.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hold_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delay_after_ms: Option<u64>,
+    },
+    FocusThenKey {
+        code: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hold_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delay_after_ms: Option<u64>,
+    },
+    TypeText {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delay_after_ms: Option<u64>,
+    },
+    /// Attend un état enregistré : rend la séquence auto-vérifiante.
+    WaitForState {
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
+    WaitMs { duration_ms: u64 },
+}
+
+impl ActivationStep {
+    /// Délai à respecter après l'étape, avant la suivante.
+    pub fn delay_after_ms(&self) -> Option<u64> {
+        match self {
+            Self::ClickCenter { delay_after_ms }
+            | Self::DoubleClick { delay_after_ms }
+            | Self::TypeText { delay_after_ms }
+            | Self::Key { delay_after_ms, .. }
+            | Self::FocusThenKey { delay_after_ms, .. } => *delay_after_ms,
+            Self::WaitForState { .. } | Self::WaitMs { .. } => None,
+        }
+    }
+}
+
+/// Autorité de validation d'une activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verification {
+    /// Seule la détection de `expectedState` vaut succès (aucun repli).
+    State,
+    /// Un changement d'écran suffit — vérification faible, sujette aux faux
+    /// positifs (un simple surlignage compte comme un changement).
+    ScreenChange,
+    /// Aucune vérification : la première séquence est jouée puis on rend la main.
+    None,
 }
 
 /// Ancrage relatif: les bounds de la zone sont décalés (dx, dy) — en
@@ -342,6 +409,24 @@ pub enum LayoutZoneKind {
     Link,
     Text,
     Region,
+    /// Interrupteur à deux états (distinct d'une case à cocher).
+    Toggle,
+    /// Curseur de valeur continue.
+    Slider,
+    /// Incrémenteur (±) à valeur discrète.
+    Stepper,
+    /// Onglet d'un groupe d'onglets.
+    Tab,
+    /// Bouton de validation/annulation d'une boîte de dialogue.
+    DialogAction,
+}
+
+impl LayoutZoneKind {
+    /// Valeurs exposées dans le JSON Schema MCP — doit rester exhaustif.
+    pub const ALL: &'static [&'static str] = &[
+        "button", "input", "textarea", "dropdown", "menu", "checkbox", "radio",
+        "link", "text", "region", "toggle", "slider", "stepper", "tab", "dialog_action",
+    ];
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -492,6 +577,9 @@ pub struct ActivateNodeData {
     pub expected_state: Option<String>,
     #[serde(default = "default_true")]
     pub verify: bool,
+    /// Autorité de validation; par défaut déduite de la zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<Verification>,
     #[serde(default = "default_5000")]
     pub timeout_ms: u64,
     #[serde(default)]
@@ -620,6 +708,14 @@ pub struct AppProfile {
     pub background_keyboard: String,
     #[serde(default)]
     pub pause_on_focus_loss: bool,
+    /// Délais par défaut de l'application, utilisés quand une étape
+    /// d'activation ne fixe pas les siens (cascade étape → profil → constante).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_post_click_delay_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_key_hold_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_post_action_delay_ms: Option<u64>,
 }
 
 fn default_auto() -> String { "auto".to_string() }
@@ -841,6 +937,12 @@ pub struct SetAppProfileArgs {
     pub background_keyboard: Option<String>,
     #[serde(default)]
     pub pause_on_focus_loss: Option<bool>,
+    #[serde(default)]
+    pub default_post_click_delay_ms: Option<u64>,
+    #[serde(default)]
+    pub default_key_hold_ms: Option<u64>,
+    #[serde(default)]
+    pub default_post_action_delay_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -50,10 +50,30 @@ fn validate_zone(zone: &LayoutZone, index: usize) -> Result<(), String> {
         if steps.is_empty() { return Err(format!("zone {}: séquence d'activation vide (omettre plutôt)", index + 1)); }
         if steps.len() > 10 { return Err(format!("zone {}: plus de 10 étapes d'activation", index + 1)); }
         for step in steps {
-            if let ActivationStep::Key { code } | ActivationStep::FocusThenKey { code } = step {
-                if code.trim().is_empty() || code.len() > 40 {
-                    return Err(format!("zone {}: code de touche invalide", index + 1));
+            match step {
+                ActivationStep::Key { code, hold_ms, .. } | ActivationStep::FocusThenKey { code, hold_ms, .. } => {
+                    if code.trim().is_empty() || code.len() > 40 {
+                        return Err(format!("zone {}: code de touche invalide", index + 1));
+                    }
+                    if hold_ms.is_some_and(|v| v > 5_000) {
+                        return Err(format!("zone {}: holdMs > 5 000", index + 1));
+                    }
                 }
+                ActivationStep::WaitForState { state, timeout_ms } => {
+                    if state.trim().is_empty() {
+                        return Err(format!("zone {}: waitForState sans état", index + 1));
+                    }
+                    if timeout_ms.is_some_and(|v| v > 60_000) {
+                        return Err(format!("zone {}: timeoutMs > 60 000", index + 1));
+                    }
+                }
+                ActivationStep::WaitMs { duration_ms } if *duration_ms > 60_000 => {
+                    return Err(format!("zone {}: durationMs > 60 000", index + 1));
+                }
+                _ => {}
+            }
+            if step.delay_after_ms().is_some_and(|v| v > 60_000) {
+                return Err(format!("zone {}: delayAfterMs > 60 000", index + 1));
             }
         }
     }

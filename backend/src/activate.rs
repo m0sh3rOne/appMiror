@@ -1,9 +1,12 @@
-//! Activation sémantique des zones de layout : stratégies de repli et
-//! vérification visuelle par hash perceptuel de la frame avant/après.
+//! Activation sémantique des zones de layout : séquences temporisées,
+//! stratégies de repli et vérification du résultat.
 //!
-//! C'est le cœur de `activate_ui_element` (MCP). La détection d'état complète
-//! (phase 3) branchera ici ; en attendant, la vérification est un détecteur de
-//! changement d'écran : dHash + différence moyenne de luminance sur la frame.
+//! C'est le cœur de `activate_ui_element` (MCP). **La vérification est une
+//! hiérarchie stricte, pas un OU** : dès qu'une zone déclare un `expectedState`,
+//! seule la détection de cet état vaut succès — un simple changement d'écran
+//! (surlignage d'un bouton survolé, animation de fond) ne doit jamais suffire,
+//! sous peine de faux positifs. Le mode `screen_change` reste disponible pour
+//! les zones sans état déclaré, mais il est explicitement signalé comme faible.
 
 use std::time::Duration;
 
@@ -11,8 +14,31 @@ use serde_json::{json, Value};
 use tokio::sync::watch;
 
 use crate::app::AttachedWindow;
-use crate::protocol::{ActivationStep, LayoutFile, LayoutZone, MouseButton, UiStateFile};
+use crate::protocol::{ActivationStep, AppProfile, LayoutFile, LayoutZone, MouseButton, UiStateFile, Verification};
 use crate::{capture, input};
+
+/// Délais par défaut quand ni l'étape ni le profil applicatif ne les fixent.
+const DEFAULT_POST_CLICK_DELAY_MS: u64 = 60;
+const DEFAULT_KEY_HOLD_MS: u64 = 0;
+const DEFAULT_POST_ACTION_DELAY_MS: u64 = 600;
+
+/// Délais effectifs d'une activation : cascade étape → profil → constante.
+#[derive(Debug, Clone, Copy)]
+struct Timings {
+    post_click_ms: u64,
+    key_hold_ms: u64,
+    post_action_ms: u64,
+}
+
+impl Timings {
+    fn from_profile(profile: &AppProfile) -> Self {
+        Self {
+            post_click_ms: profile.default_post_click_delay_ms.unwrap_or(DEFAULT_POST_CLICK_DELAY_MS),
+            key_hold_ms: profile.default_key_hold_ms.unwrap_or(DEFAULT_KEY_HOLD_MS),
+            post_action_ms: profile.default_post_action_delay_ms.unwrap_or(DEFAULT_POST_ACTION_DELAY_MS),
+        }
+    }
+}
 
 /// Stratégie demandée par l'agent. `Auto` enchaîne les replis dans l'ordre
 /// jusqu'à observer un changement d'écran.
@@ -38,12 +64,14 @@ impl Strategy {
     fn sequence(self) -> Vec<ActivationStep> {
         match self {
             // Auto est déplié en plusieurs séquences dans `planned_attempts`.
-            Strategy::Auto | Strategy::Click => vec![ActivationStep::ClickCenter],
+            Strategy::Auto | Strategy::Click => vec![ActivationStep::ClickCenter { delay_after_ms: None }],
+            // Le clic ne fait souvent que déplacer la sélection : le délai
+            // avant Entrée laisse l'application enregistrer ce déplacement.
             Strategy::ClickThenEnter => vec![
-                ActivationStep::ClickCenter,
-                ActivationStep::Key { code: "Enter".into() },
+                ActivationStep::ClickCenter { delay_after_ms: Some(250) },
+                ActivationStep::Key { code: "Enter".into(), hold_ms: Some(120), delay_after_ms: None },
             ],
-            Strategy::DoubleClick => vec![ActivationStep::DoubleClick],
+            Strategy::DoubleClick => vec![ActivationStep::DoubleClick { delay_after_ms: None }],
         }
     }
 }
@@ -74,20 +102,53 @@ pub fn resolve_zone<'a>(
             || zone.name.to_lowercase() == wanted
             || zone.label.as_deref().is_some_and(|l| l.to_lowercase() == wanted)
     };
-    let mut found = candidates
+    let matched: Vec<(&LayoutFile, &LayoutZone)> = candidates
         .iter()
-        .flat_map(|file| file.zones.iter().filter(|z| matches_zone(z)).map(move |z| (*file, z)));
-    let first = found.next().ok_or_else(|| {
+        .flat_map(|file| file.zones.iter().filter(|z| matches_zone(z)).map(move |z| (*file, z)))
+        .collect();
+    if matched.is_empty() {
         let available: Vec<String> = candidates
             .iter()
             .flat_map(|file| file.zones.iter().map(|z| format!("{}/{}", file.name, z.name)))
             .collect();
-        format!("élément '{element}' introuvable; zones connues: {}", available.join(", "))
-    })?;
-    if found.next().is_some() && layout.is_none() {
-        tracing::warn!("élément '{element}' ambigu entre plusieurs layouts; premier retenu ({})", first.0.name);
+        return Err(format!("élément '{element}' introuvable; zones connues: {}", available.join(", ")));
     }
-    Ok(first)
+    // Ambiguïté entre layouts (une application a souvent plusieurs variantes du
+    // même écran) : préférer la zone qui déclare un expectedState, sinon la
+    // vérification retomberait silencieusement en mode faible sur un homonyme
+    // moins bien décrit. C'est cette bascule qui produisait des faux positifs.
+    let best = matched
+        .iter()
+        .find(|(_, zone)| zone.expected_state.is_some())
+        .copied()
+        .unwrap_or(matched[0]);
+    if matched.len() > 1 && layout.is_none() {
+        tracing::warn!(
+            "élément '{element}' présent dans {} layouts; retenu: {} (expectedState={:?})",
+            matched.len(),
+            best.0.name,
+            best.1.expected_state
+        );
+    }
+    Ok(best)
+}
+
+/// Layouts contenant un homonyme de `element`, hors celui retenu — remonté
+/// dans le rapport pour que l'agent puisse lever l'ambiguïté explicitement.
+fn ambiguous_layouts(layouts: &[LayoutFile], element: &str, chosen: &LayoutFile) -> Vec<String> {
+    let wanted = element.trim().to_lowercase();
+    layouts
+        .iter()
+        .filter(|file| file.name != chosen.name)
+        .filter(|file| {
+            file.zones.iter().any(|z| {
+                z.id.to_lowercase() == wanted
+                    || z.name.to_lowercase() == wanted
+                    || z.label.as_deref().is_some_and(|l| l.to_lowercase() == wanted)
+            })
+        })
+        .map(|file| file.name.clone())
+        .collect()
 }
 
 /// Centre effectif de la zone en coordonnées normalisées, ancres résolues.
@@ -135,17 +196,34 @@ impl Probe {
     }
 
     /// Dernière frame disponible, en attendant la première si nécessaire.
+    /// `borrow_and_update` marque la valeur comme vue : un `fresh_frame`
+    /// ultérieur attendra donc bien une frame *postérieure*.
     async fn frame(&mut self, timeout: Duration) -> Result<Vec<u8>, String> {
-        let current = self.rx.borrow().clone();
+        let current = self.rx.borrow_and_update().clone();
         if !current.is_empty() {
             return Ok(current);
         }
         tokio::select! {
             res = self.rx.changed() => {
                 res.map_err(|_| "capture de vérification interrompue".to_string())?;
-                Ok(self.rx.borrow().clone())
+                Ok(self.rx.borrow_and_update().clone())
             }
             _ = tokio::time::sleep(timeout) => Err("délai dépassé pour la frame de vérification".into()),
+        }
+    }
+
+    /// Frame strictement postérieure au dernier relevé. Indispensable après une
+    /// action : sans cela on peut comparer la frame d'avant le clic avec
+    /// elle-même et conclure à tort que « rien n'a changé ».
+    async fn fresh_frame(&mut self, timeout: Duration) -> Result<Vec<u8>, String> {
+        tokio::select! {
+            res = self.rx.changed() => {
+                res.map_err(|_| "capture de vérification interrompue".to_string())?;
+                Ok(self.rx.borrow_and_update().clone())
+            }
+            // Pas de nouvelle frame : l'écran est probablement figé. On rend la
+            // dernière connue plutôt que d'échouer.
+            _ = tokio::time::sleep(timeout) => Ok(self.rx.borrow().clone()),
         }
     }
 
@@ -212,12 +290,29 @@ fn frame_diff(a: &FrameSig, b: &FrameSig) -> Diff {
 
 fn step_label(step: &ActivationStep) -> String {
     match step {
-        ActivationStep::ClickCenter => "click_center".into(),
-        ActivationStep::DoubleClick => "double_click".into(),
-        ActivationStep::Key { code } => format!("key {code}"),
-        ActivationStep::FocusThenKey { code } => format!("focus_then_key {code}"),
-        ActivationStep::TypeText => "type_text".into(),
+        ActivationStep::ClickCenter { .. } => "click_center".into(),
+        ActivationStep::DoubleClick { .. } => "double_click".into(),
+        ActivationStep::Key { code, hold_ms, .. } => match hold_ms {
+            Some(hold) => format!("key {code} (hold {hold}ms)"),
+            None => format!("key {code}"),
+        },
+        ActivationStep::FocusThenKey { code, .. } => format!("focus_then_key {code}"),
+        ActivationStep::TypeText { .. } => "type_text".into(),
+        ActivationStep::WaitForState { state, timeout_ms } => {
+            format!("wait_for_state {state} (≤{}ms)", timeout_ms.unwrap_or(3_000))
+        }
+        ActivationStep::WaitMs { duration_ms } => format!("wait {duration_ms}ms"),
     }
+}
+
+/// Appui maintenu puis relâche. `hold` à 0 conserve l'ancien comportement
+/// (down+up immédiats), suffisant pour la plupart des applications de bureau.
+async fn press_key(window: isize, code: &str, hold_ms: u64) {
+    input::key(Some(window), code, true);
+    if hold_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(hold_ms.min(5_000))).await;
+    }
+    input::key(Some(window), code, false);
 }
 
 async fn run_step(
@@ -226,36 +321,48 @@ async fn run_step(
     px: i32,
     py: i32,
     text: Option<&str>,
+    timings: Timings,
+    states: &[UiStateFile],
 ) -> Result<(), String> {
     match step {
-        ActivationStep::ClickCenter => {
+        ActivationStep::ClickCenter { .. } => {
             input::mouse_move(target.id, px, py);
             input::mouse_button(target.id, MouseButton::Left, true, px, py);
             input::mouse_button(target.id, MouseButton::Left, false, px, py);
         }
-        ActivationStep::DoubleClick => {
+        ActivationStep::DoubleClick { .. } => {
             input::mouse_move(target.id, px, py);
             for _ in 0..2 {
                 input::mouse_button(target.id, MouseButton::Left, true, px, py);
                 input::mouse_button(target.id, MouseButton::Left, false, px, py);
             }
         }
-        ActivationStep::Key { code } => {
-            input::key(Some(target.id), code, true);
-            input::key(Some(target.id), code, false);
+        ActivationStep::Key { code, hold_ms, .. } => {
+            press_key(target.id, code, hold_ms.unwrap_or(timings.key_hold_ms)).await;
         }
-        ActivationStep::FocusThenKey { code } => {
+        ActivationStep::FocusThenKey { code, hold_ms, .. } => {
             input::focus_window(target.id);
             tokio::time::sleep(Duration::from_millis(150)).await;
-            input::key(Some(target.id), code, true);
-            input::key(Some(target.id), code, false);
+            press_key(target.id, code, hold_ms.unwrap_or(timings.key_hold_ms)).await;
         }
-        ActivationStep::TypeText => {
+        ActivationStep::TypeText { .. } => {
             let text = text.ok_or_else(|| "l'étape type_text requiert un paramètre 'text'".to_string())?;
             crate::mcp::type_text(Some(target.id), text);
         }
+        ActivationStep::WaitForState { state, timeout_ms } => {
+            crate::detect::wait_for_state_on_window(target.id, states, state, timeout_ms.unwrap_or(3_000))
+                .await
+                .map(|_| ())?;
+        }
+        ActivationStep::WaitMs { duration_ms } => {
+            tokio::time::sleep(Duration::from_millis((*duration_ms).min(300_000))).await;
+        }
     }
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    // Délai post-étape : valeur de l'étape, sinon défaut du profil.
+    let delay = step.delay_after_ms().unwrap_or(timings.post_click_ms);
+    if delay > 0 {
+        tokio::time::sleep(Duration::from_millis(delay.min(300_000))).await;
+    }
     Ok(())
 }
 
@@ -288,16 +395,18 @@ fn planned_attempts(zone: &LayoutZone, strategy: Strategy, preferred: Option<&st
     }
 }
 
-/// Attend (≤ ~2,5 s) que l'état attendu soit détecté sur les frames de la
-/// sonde. Renvoie (atteint, vue du meilleur état pour le rapport).
+/// Attend que l'état attendu soit détecté sur les frames de la sonde.
+/// Renvoie (atteint, vue du meilleur état pour le rapport).
 async fn wait_expected_state(
     probe: &mut Probe,
     states: &[UiStateFile],
     expected: &str,
+    timeout_ms: u64,
 ) -> Result<(bool, Value), String> {
     let mut last_view = Value::Null;
-    for _ in 0..8 {
-        let frame = probe.frame(Duration::from_millis(800)).await?;
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.clamp(250, 60_000));
+    while std::time::Instant::now() < deadline {
+        let frame = probe.fresh_frame(Duration::from_millis(800)).await?;
         let (best, others) = crate::detect::detect(&frame, states)?;
         if let Some(best) = &best {
             if best.name == expected {
@@ -314,10 +423,27 @@ async fn wait_expected_state(
     Ok((false, last_view))
 }
 
+/// Détermine l'autorité de validation : demande explicite de l'agent, sinon
+/// `State` dès qu'un `expectedState` est déclaré, sinon `ScreenChange`.
+fn resolve_verification(zone: &LayoutZone, requested: Option<Verification>, verify: bool) -> Verification {
+    if !verify {
+        return Verification::None;
+    }
+    match requested {
+        Some(mode) => mode,
+        None if zone.expected_state.is_some() => Verification::State,
+        None => Verification::ScreenChange,
+    }
+}
+
 /// Active un élément de layout sur la fenêtre cible et rapporte chaque
-/// tentative. `Ok` dès qu'une tentative produit un changement d'écran — et,
-/// si la zone déclare un `expected_state` connu de `states`, que cet état est
-/// détecté ensuite. `Err` avec le rapport complet sinon.
+/// tentative.
+///
+/// En mode `State` (défaut dès qu'un `expectedState` est déclaré), **seule** la
+/// détection de cet état vaut succès : le changement d'écran est rapporté mais
+/// n'est jamais un critère. Si l'état n'a pas encore été capturé, l'appel
+/// échoue explicitement plutôt que de retomber en silence sur une vérification
+/// faible — c'est la source du faux positif « clic qui ne fait que surligner ».
 pub async fn activate_element(
     mut target: AttachedWindow,
     layouts: &[LayoutFile],
@@ -327,9 +453,33 @@ pub async fn activate_element(
     strategy: Strategy,
     verify: bool,
     text: Option<&str>,
+    requested_verification: Option<Verification>,
 ) -> Result<Value, String> {
     let (file, zone) = resolve_zone(layouts, layout, element)?;
     let profile = crate::profile_store::load_or_default(&file.context).await;
+    let timings = Timings::from_profile(&profile);
+    let verification = resolve_verification(zone, requested_verification, verify);
+
+    // Mode State : l'état attendu doit être déclaré *et* enregistré. Sinon on
+    // ne peut rien affirmer — mieux vaut une erreur lisible qu'un faux succès.
+    if verification == Verification::State {
+        let Some(expected) = zone.expected_state.as_deref() else {
+            return Err(format!(
+                "vérification 'state' demandée mais la zone '{}' ne déclare aucun expectedState; \
+                 ajoutez-le au layout ou utilisez verification='screen_change'",
+                zone.name
+            ));
+        };
+        if !states.iter().any(|s| s.name == expected) {
+            let known: Vec<&str> = states.iter().map(|s| s.name.as_str()).collect();
+            return Err(format!(
+                "l'état attendu '{expected}' n'est pas enregistré pour '{}': impossible de vérifier \
+                 l'activation. Capturez-le (capture_ui_state) puis réessayez. États connus: [{}]",
+                file.context,
+                known.join(", ")
+            ));
+        }
+    }
     let (width, height) = input::client_size(target.id)
         .ok_or_else(|| format!("fenêtre cible {} introuvable", target.id))?;
     target.width = width;
@@ -345,16 +495,75 @@ pub async fn activate_element(
         height: zone.bounds.height,
     };
 
-    // L'injection MCP est toujours en avant-plan : focus d'abord, comme le
-    // moteur de workflow, pour que les touches atteignent la bonne fenêtre.
-    input::focus_window(target.id);
-    tokio::time::sleep(Duration::from_millis(180)).await;
-    let foreground = input::is_foreground_window(target.id);
+    // L'injection MCP est toujours en avant-plan. Une seule tentative ne suffit
+    // pas : les fenêtres de jeu (et les WinUI) tardent à accepter le focus, et
+    // sans focus les frappes partent dans une autre application — l'action
+    // semble alors « sans effet » pour une raison invisible dans le rapport.
+    let mut foreground = false;
+    for _ in 0..6 {
+        input::focus_window(target.id);
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        if input::is_foreground_window(target.id) {
+            foreground = true;
+            break;
+        }
+    }
+    if !foreground && profile.foreground_required {
+        return Err(format!(
+            "impossible de mettre la fenêtre {} au premier plan alors que le profil de '{}' \
+             déclare foregroundRequired: les entrées seraient injectées dans une autre application",
+            target.id, file.context
+        ));
+    }
 
-    let mut probe = if verify { Some(Probe::start(target.id)?) } else { None };
-    let before = match &mut probe {
-        Some(probe) => Some(frame_signature(&probe.frame(Duration::from_millis(1500)).await?, &zone_bounds)?),
+    let mut probe = if verification == Verification::None { None } else { Some(Probe::start(target.id)?) };
+    let before_frame = match &mut probe {
+        Some(probe) => Some(probe.frame(Duration::from_millis(1500)).await?),
         None => None,
+    };
+    let before = match &before_frame {
+        Some(frame) => Some(frame_signature(frame, &zone_bounds)?),
+        None => None,
+    };
+
+    // Précondition : l'écran courant doit être celui auquel appartient la zone.
+    // Sans ce garde-fou, on clique les coordonnées d'un layout alors que
+    // l'application est sur un tout autre écran — l'action tombe dans le vide
+    // et le diagnostic devient incompréhensible. On ne refuse que si l'écran
+    // est reconnu *avec certitude* comme un autre écran : un état simplement
+    // non reconnu (fond animé, variante non capturée) laisse passer avec un
+    // avertissement, sinon la détection imparfaite bloquerait tout.
+    let precondition = match &before_frame {
+        Some(frame) if !states.is_empty() => {
+            let (best, _) = crate::detect::detect(frame, states)?;
+            match &best {
+                Some(current) => {
+                    let expected_here = current
+                        .layout
+                        .as_deref()
+                        .is_none_or(|layout| layout.eq_ignore_ascii_case(&file.name));
+                    if !expected_here {
+                        return Err(format!(
+                            "écran courant reconnu comme '{}' (layout '{}'), mais la zone '{}' appartient au layout '{}'. \
+                             Naviguez d'abord vers le bon écran, ou utilisez detect_layout pour connaître les éléments \
+                             réellement disponibles ici.",
+                            current.name,
+                            current.layout.as_deref().unwrap_or("?"),
+                            zone.name,
+                            file.name
+                        ));
+                    }
+                    json!({ "state": current.name, "match": true })
+                }
+                None => json!({
+                    "state": null,
+                    "match": null,
+                    "warning": "écran courant non reconnu: impossible de garantir que la zone est visible à l'écran. \
+                                L'action va être tentée à l'aveugle; capturez cet écran (capture_ui_state) pour fiabiliser."
+                }),
+            }
+        }
+        _ => json!({ "state": null, "match": null, "warning": "aucun état enregistré pour ce contexte" }),
     };
 
     let attempts = planned_attempts(zone, strategy, Some(&profile.preferred_activation));
@@ -363,51 +572,50 @@ pub async fn activate_element(
 
     for (name, steps) in &attempts {
         for step in steps {
-            run_step(&target, step, px, py, text).await?;
+            run_step(&target, step, px, py, text, timings, states).await?;
         }
         let Some(probe_ref) = &mut probe else {
             reports.push(json!({ "strategy": name, "steps": steps.iter().map(step_label).collect::<Vec<_>>() }));
             break; // sans vérification, une seule tentative a un sens
         };
         // Laisse l'application réagir avant de relever la frame.
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        let after = frame_signature(&probe_ref.frame(Duration::from_millis(1000)).await?, &zone_bounds)?;
+        tokio::time::sleep(Duration::from_millis(timings.post_action_ms.min(30_000))).await;
+        let after = frame_signature(&probe_ref.fresh_frame(Duration::from_millis(1000)).await?, &zone_bounds)?;
         let diff = frame_diff(before.as_ref().unwrap(), &after);
         let changed = diff.changed();
         reports.push(json!({
             "strategy": name,
             "steps": steps.iter().map(step_label).collect::<Vec<_>>(),
-            "changed": changed,
+            "screenChanged": changed,
             "hammingDistance": diff.hamming,
             "meanLumaDiff": (diff.mean * 100.0).round() / 100.0,
             "zoneHammingDistance": diff.zone_hamming,
             "zoneMeanLumaDiff": (diff.zone_mean * 100.0).round() / 100.0,
         }));
-        if changed {
-            // Si un état attendu est déclaré ET enregistré, l'écran doit non
-            // seulement changer mais atterrir sur cet état ; sinon on passe à
-            // la stratégie suivante.
-            let expected_known = zone
-                .expected_state
-                .as_deref()
-                .filter(|expected| states.iter().any(|s| s.name == *expected));
-            match expected_known {
-                None => {
+
+        match verification {
+            // Seul l'état fait foi. On l'attend systématiquement : un écran qui
+            // n'a pas « assez » changé peut tout de même avoir navigué, et un
+            // écran qui a changé (surlignage) peut n'avoir rien validé.
+            Verification::State => {
+                let expected = zone.expected_state.as_deref().unwrap_or_default();
+                let (reached, view) = wait_expected_state(probe_ref, states, expected, 3_000).await?;
+                if let Some(last) = reports.last_mut() {
+                    last["stateMatched"] = json!(reached);
+                    last["stateAfter"] = view;
+                }
+                if reached {
                     verified = true;
                     break;
                 }
-                Some(expected) => {
-                    let (reached, view) = wait_expected_state(probe_ref, states, expected).await?;
-                    if let Some(last) = reports.last_mut() {
-                        last["stateMatched"] = json!(reached);
-                        last["stateAfter"] = view;
-                    }
-                    if reached {
-                        verified = true;
-                        break;
-                    }
+            }
+            Verification::ScreenChange => {
+                if changed {
+                    verified = true;
+                    break;
                 }
             }
+            Verification::None => break,
         }
     }
     if let Some(probe) = probe {
@@ -421,22 +629,44 @@ pub async fn activate_element(
         "context": file.context,
         "clickPoint": { "x": px, "y": py, "normalized": { "x": cx, "y": cy } },
         "windowFocused": foreground,
+        "focusWarning": if foreground { Value::Null } else {
+            json!("la fenêtre n'a pas pu être mise au premier plan: les frappes clavier ont pu être reçues par une autre application. Si cette application exige le focus, renseignez foregroundRequired dans son profil (set_app_profile)")
+        },
+        "alsoDefinedIn": ambiguous_layouts(layouts, element, file),
+        "precondition": precondition,
         "attempts": reports,
-        "verified": if verify { json!(verified) } else { json!("skipped") },
+        "verification": verification,
+        "verified": if verification == Verification::None { json!("skipped") } else { json!(verified) },
+        "confidence": match verification {
+            Verification::State => "strong",
+            Verification::ScreenChange => "weak",
+            Verification::None => "none",
+        },
         "expectedState": zone.expected_state,
-        "note": match zone.expected_state.as_deref() {
-            Some(expected) if states.iter().any(|s| s.name == expected) =>
-                "vérification par changement d'écran puis détection de l'état attendu",
-            Some(_) =>
-                "expectedState déclaré mais aucun état enregistré sous ce nom pour ce contexte; vérification par changement d'écran uniquement (capturez l'état via le panneau Layout)",
-            None =>
-                "vérification par changement d'écran (dHash + luminance, frame entière + crop de la zone); les popups (menus contextuels) s'ouvrent hors de la fenêtre capturée et sont invisibles à cette vérification",
+        "timings": {
+            "postClickMs": timings.post_click_ms,
+            "keyHoldMs": timings.key_hold_ms,
+            "postActionMs": timings.post_action_ms,
+        },
+        "note": match verification {
+            Verification::State =>
+                "succès conditionné à la détection de expectedState; le changement d'écran est informatif seulement",
+            Verification::ScreenChange =>
+                "vérification FAIBLE: un simple changement visuel (surlignage au survol, animation de fond) suffit et peut produire un faux positif. Déclarez un expectedState sur la zone et capturez cet état pour une vérification fiable",
+            Verification::None => "aucune vérification demandée",
         },
     });
 
-    if verify && !verified {
+    if verification != Verification::None && !verified {
         return Err(format!(
-            "aucune stratégie n'a produit de changement d'écran; rapport: {}",
+            "activation non vérifiée ({}); rapport: {}",
+            match verification {
+                Verification::State => format!(
+                    "l'état attendu '{}' n'a pas été atteint",
+                    zone.expected_state.as_deref().unwrap_or("?")
+                ),
+                _ => "aucune stratégie n'a produit de changement d'écran".to_string(),
+            },
             serde_json::to_string_pretty(&report).unwrap_or_default()
         ));
     }
@@ -465,12 +695,17 @@ pub async fn type_into_element(
     input::focus_window(target.id);
     tokio::time::sleep(Duration::from_millis(180)).await;
 
+    let profile = crate::profile_store::load_or_default(&file.context).await;
+    let timings = Timings::from_profile(&profile);
     let steps: Vec<ActivationStep> = match &zone.activation {
-        Some(steps) if steps.iter().any(|s| *s == ActivationStep::TypeText) => steps.clone(),
-        _ => vec![ActivationStep::ClickCenter, ActivationStep::TypeText],
+        Some(steps) if steps.iter().any(|s| matches!(s, ActivationStep::TypeText { .. })) => steps.clone(),
+        _ => vec![
+            ActivationStep::ClickCenter { delay_after_ms: None },
+            ActivationStep::TypeText { delay_after_ms: None },
+        ],
     };
     for step in &steps {
-        run_step(&target, step, px, py, Some(text)).await?;
+        run_step(&target, step, px, py, Some(text), timings, &[]).await?;
     }
     Ok(json!({
         "element": zone.name,

@@ -52,6 +52,9 @@ pub async fn load_or_default(context: &str) -> AppProfile {
         background_mouse: "supported".to_string(),
         background_keyboard: "supported".to_string(),
         pause_on_focus_loss: false,
+        default_post_click_delay_ms: None,
+        default_key_hold_ms: None,
+        default_post_action_delay_ms: None,
     })
 }
 
