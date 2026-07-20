@@ -50,6 +50,10 @@ pub async fn run(
     let mut last_success = true;
     let mut executed = 0usize;
     let mut active_target = fallback_target;
+    // Le checkbox Focus du START signifie que les macros doivent utiliser de
+    // vrais SendInput. C'est indispensable pour les applications WinUI/UWP
+    // (dont le Bloc-notes moderne), qui ignorent les messages PostMessage.
+    let mut force_foreground = false;
 
     let result: Result<usize, (Option<String>, String)> = async {
         loop {
@@ -60,6 +64,9 @@ pub async fn run(
             let output = match &node.data {
                 WorkflowNodeData::Start(data) => {
                     active_target = Some(resolve_start_target(data, active_target).await.map_err(|e| (Some(node.id.clone()), e))?);
+                    force_foreground = data.focus
+                        && data.execution_mode == AppExecutionMode::MainDesktop
+                        && !matches!(effective_target_kind(data), StartTargetKind::MainDesktop | StartTargetKind::VirtualDesktop);
                     WorkflowHandle::Next
                 }
                 WorkflowNodeData::Macro(data) => {
@@ -68,8 +75,13 @@ pub async fn run(
                         Some(context) => crate::macro_store::load_named(context, &data.macro_name).await,
                         None => crate::macro_store::load_by_name(&data.macro_name).await,
                     };
+                    let injection_mode = if force_foreground { InjectionMode::Foreground } else { data.injection_mode };
+                    if injection_mode == InjectionMode::Foreground {
+                        input::focus_window(target.id);
+                        tokio::time::sleep(Duration::from_millis(180)).await;
+                    }
                     match macro_file {
-                        Ok(m) => match crate::macro_player::play_with_mode(&m, target, data.injection_mode).await {
+                        Ok(m) => match crate::macro_player::play_with_mode(&m, target, injection_mode).await {
                             Ok(_) => { last_success = true; WorkflowHandle::OnSuccess }
                             Err(e) => { tracing::warn!("macro {} échouée: {e}", data.macro_name); last_success = false; WorkflowHandle::OnError }
                         },
@@ -111,14 +123,46 @@ pub async fn run(
     }
 }
 
-fn find_target(data: &StartNodeData) -> Result<Option<AttachedWindow>, String> {
-    let mut context = data.app_context.as_deref().unwrap_or("").trim().to_lowercase();
+fn effective_target_kind(data: &StartNodeData) -> StartTargetKind {
+    if let Some(kind) = data.target_kind { return kind; }
+    // Compatibilité avec les premiers workflows : lorsque le contexte n'a pas
+    // pu être résolu (`unknown`) mais qu'une commande est présente, la commande
+    // doit primer sur un ancien titre d'application resté dans le JSON.
+    let context = data.app_context.as_deref().unwrap_or("").trim();
+    if data.command.as_deref().is_some_and(|v| !v.trim().is_empty())
+        && (context.is_empty() || context.eq_ignore_ascii_case("unknown")) {
+        StartTargetKind::Command
+    } else {
+        StartTargetKind::Window
+    }
+}
+
+fn command_context(data: &StartNodeData) -> String {
+    let command = data.command.as_deref().unwrap_or("").trim().trim_matches('"');
+    std::path::Path::new(command)
+        .file_name()
+        .map(|v| v.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+}
+
+fn find_target(data: &StartNodeData, kind: StartTargetKind) -> Result<Option<AttachedWindow>, String> {
+    let mut context = match kind {
+        StartTargetKind::Command => command_context(data),
+        _ => data.app_context.as_deref().unwrap_or("").trim().to_lowercase(),
+    };
     if context == "unknown" { context.clear(); }
-    let title = data.app_title.as_deref().unwrap_or("").trim().to_lowercase();
+    let title = if kind == StartTargetKind::Window {
+        data.app_title.as_deref().unwrap_or("").trim().to_lowercase()
+    } else {
+        String::new()
+    };
     let title_suffix = title.rsplit_once(" — ").or_else(|| title.rsplit_once(" - ")).map(|(_, suffix)| suffix.trim()).unwrap_or(&title);
     if context.is_empty() && title.is_empty() { return Ok(None); }
     let windows = capture::list_windows(&[], true).map_err(|e| format!("liste des applications: {e}"))?;
     let found = windows.into_iter().find(|w| {
+        if kind == StartTargetKind::MainDesktop { return w.is_desktop && !w.is_virtual; }
+        if kind == StartTargetKind::VirtualDesktop { return w.is_desktop && w.is_virtual; }
+        if w.is_desktop { return false; }
         #[cfg(windows)]
         let correct_desktop = match data.execution_mode {
             AppExecutionMode::MainDesktop => !w.is_virtual,
@@ -159,17 +203,29 @@ fn launch_start_app(data: &StartNodeData) -> Result<(), String> {
 }
 
 async fn resolve_start_target(data: &StartNodeData, fallback: Option<AttachedWindow>) -> Result<AttachedWindow, String> {
-    let has_selector = data.app_context.as_deref().is_some_and(|v| !v.trim().is_empty() && !v.eq_ignore_ascii_case("unknown"))
+    let kind = effective_target_kind(data);
+    let is_desktop = matches!(kind, StartTargetKind::MainDesktop | StartTargetKind::VirtualDesktop);
+    let has_selector = is_desktop
+        || kind == StartTargetKind::Command
+        || data.app_context.as_deref().is_some_and(|v| !v.trim().is_empty() && !v.eq_ignore_ascii_case("unknown"))
         || data.app_title.as_deref().is_some_and(|v| !v.trim().is_empty());
-    let mut target = if has_selector { find_target(data)? } else { fallback };
-    if target.is_none() && has_selector {
+    let mut target = if has_selector { find_target(data, kind)? } else { fallback };
+    if target.is_none() && !is_desktop && (has_selector || kind == StartTargetKind::Command) {
         launch_start_app(data)?;
         for _ in 0..40 {
             tokio::time::sleep(Duration::from_millis(250)).await;
-            if let Some(found) = find_target(data)? { target = Some(found); break; }
+            if let Some(found) = find_target(data, kind)? { target = Some(found); break; }
         }
     }
-    let target = target.ok_or_else(|| "application cible introuvable après lancement".to_string())?;
-    if data.focus { input::focus_window(target.id); }
+    let target = target.ok_or_else(|| "cible introuvable après lancement".to_string())?;
+    if data.focus && !is_desktop && data.execution_mode == AppExecutionMode::MainDesktop {
+        // Plusieurs tentatives laissent le temps aux fenêtres WinUI de finir
+        // leur initialisation avant l'injection de la première touche.
+        for _ in 0..6 {
+            input::focus_window(target.id);
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            if input::is_foreground_window(target.id) { break; }
+        }
+    }
     Ok(target)
 }

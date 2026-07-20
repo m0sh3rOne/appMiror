@@ -15,7 +15,7 @@ use crate::protocol::MouseButton;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
+    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
     MOUSEINPUT, MOUSE_EVENT_FLAGS, MapVirtualKeyW, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
@@ -94,6 +94,10 @@ pub fn focus_window(hwnd: isize) {
             let _ = AttachThreadInput(our_tid, fg_tid, false);
         }
     }
+}
+
+pub fn is_foreground_window(hwnd: isize) -> bool {
+    unsafe { GetForegroundWindow() == as_hwnd(hwnd) }
 }
 
 pub fn client_size(hwnd: isize) -> Option<(i32, i32)> {
@@ -250,6 +254,29 @@ pub fn key(hwnd: Option<isize>, code: &str, pressed: bool) {
         SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
     }
     let _ = KEYBD_EVENT_FLAGS(0); // silence unused import warning path
+}
+
+/// Injection Unicode indépendante du layout clavier configuré sur l'hôte.
+/// Un couple key-down/key-up est émis pour chaque unité UTF-16.
+pub fn text(hwnd: Option<isize>, text: &str) {
+    let _guard = hwnd.map(|h| DesktopGuard::new(as_hwnd(h)));
+    for unit in text.encode_utf16() {
+        for flags in [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP] {
+            let input = INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: VIRTUAL_KEY(0),
+                        wScan: unit,
+                        dwFlags: flags,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            };
+            unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32); }
+        }
+    }
 }
 
 // ============================================================================

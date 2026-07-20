@@ -42,11 +42,15 @@ pub enum ClientMessage {
     Wheel { delta: i32, x: i32, y: i32 },
     /// Touche clavier. `code` = `KeyboardEvent.code` (ex: "KeyA", "Enter").
     Key { code: String, pressed: bool },
+    /// Texte Unicode déjà interprété selon le layout du navigateur.
+    TextInput { text: String },
     /// Persiste une macro depuis l'interface humaine.
     SaveMacro {
         context: String,
         name: String,
         window_id: isize,
+        #[serde(default)]
+        params: Vec<MacroParam>,
         steps: Vec<MacroStep>,
     },
     ListMacros,
@@ -57,6 +61,25 @@ pub enum ClientMessage {
     LoadWorkflow { name: String },
     ExecuteWorkflow { name: String },
     TestWorkflow { graph: WorkflowGraph },
+    /// Persistance des plans UI dessinés dans le module Layout.
+    SaveLayout {
+        context: String,
+        name: String,
+        source_width: u32,
+        source_height: u32,
+        zones: Vec<LayoutZone>,
+    },
+    ListLayouts { context: Option<String> },
+    LoadLayout { context: String, name: String },
+    /// Capture l'état courant : hash de chaque zone sur la dernière frame.
+    CaptureState {
+        context: String,
+        name: String,
+        layout: Option<String>,
+        zones: Vec<LayoutZone>,
+    },
+    ListStates { context: Option<String> },
+    DeleteState { context: String, name: String },
     /// Sauvegarde la frame courante en JPEG dans `dir` (défaut si absent/vide).
     Screenshot { dir: Option<String> },
     /// Démarre l'enregistrement d'une séquence d'images dans un sous-dossier
@@ -97,7 +120,7 @@ pub enum MouseButton {
 pub enum ServerMessage {
     Windows { items: Vec<WindowInfo> },
     /// Confirme la sélection et donne la résolution native (repère cible).
-    Selected { width: i32, height: i32 },
+    Selected { width: i32, height: i32, background: bool },
     /// Capture unique écrite sur disque.
     ScreenshotSaved { path: String },
     /// Enregistrement de séquence démarré (dossier effectif + fps effectif).
@@ -116,6 +139,12 @@ pub enum ServerMessage {
     WorkflowNodeFinished { execution_id: String, node_id: String, output: WorkflowHandle },
     WorkflowFinished { execution_id: String, name: String, nodes_executed: usize },
     WorkflowFailed { execution_id: String, node_id: Option<String>, message: String },
+    LayoutSaved { context: String, name: String, path: String },
+    LayoutList { items: Vec<LayoutSummary> },
+    LayoutLoaded { layout: LayoutFile },
+    StateSaved { context: String, name: String, signatures: usize },
+    StateList { items: Vec<UiStateSummary> },
+    StateDeleted { context: String, name: String },
     /// Évènement informatif poussé au superviseur (ex. un agent MCP a pris la
     /// main sur une fenêtre).
     Notice { message: String },
@@ -136,11 +165,17 @@ pub struct WindowInfo {
     pub title: String,
     pub locked: bool,
     pub is_virtual: bool,
+    /// Cible synthétique représentant le bureau complet plutôt qu'une fenêtre.
+    #[serde(default)]
+    pub is_desktop: bool,
     /// Nom du processus, utilisé comme contexte stable de workflow.
     pub context: String,
 }
 
 /// Étape persistée d'un workflow. Les coordonnées pointeur sont normalisées.
+/// Les étapes brutes (souris/clavier) sont complétées d'étapes sémantiques qui
+/// référencent les layouts/états du contexte — les champs texte y acceptent la
+/// substitution de paramètres `{{nom}}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MacroStep {
@@ -149,6 +184,66 @@ pub enum MacroStep {
     Wheel { delta: i32, x: f64, y: f64 },
     Key { code: String, pressed: bool },
     Text { text: String },
+    /// Active un élément de layout avec stratégies de repli + vérification.
+    ActivateElement {
+        element: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout: Option<String>,
+        /// auto | click | click_then_enter | double_click (défaut auto).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strategy: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verify: Option<bool>,
+    },
+    /// Clique sur un élément puis y tape le texte (substituable).
+    TypeIntoElement {
+        element: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout: Option<String>,
+    },
+    /// Attend qu'un état enregistré soit détecté à l'écran.
+    WaitForState {
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
+    /// Pause fixe.
+    WaitMs { duration_ms: u64 },
+    /// Exécute une autre macro (profondeur limitée), avec les mêmes paramètres.
+    CallMacro {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+    },
+}
+
+/// Paramètre déclaré d'une macro, substitué via `{{nom}}` dans les étapes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MacroParam {
+    pub name: String,
+    pub kind: MacroParamKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Valeurs admises pour kind=choice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MacroParamKind {
+    Text,
+    Number,
+    Boolean,
+    /// Jamais journalisé ni renvoyé dans les rapports.
+    Secret,
+    Choice,
+    /// Référence à une zone de layout (id/nom/label).
+    ZoneRef,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +253,8 @@ pub struct MacroFile {
     pub name: String,
     /// Identifiant au moment de l'enregistrement (informatif, non durable).
     pub window_id: isize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<MacroParam>,
     pub steps: Vec<MacroStep>,
 }
 
@@ -166,6 +263,134 @@ pub struct MacroSummary {
     pub context: String,
     pub name: String,
     pub steps: usize,
+}
+
+/// Plan d'interface défini par l'utilisateur pour un contexte applicatif.
+/// Les limites sont normalisées afin de rester valides après redimensionnement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutFile {
+    pub version: u32,
+    pub context: String,
+    pub name: String,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub zones: Vec<LayoutZone>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutZone {
+    pub id: String,
+    pub name: String,
+    pub kind: LayoutZoneKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub bounds: NormalizedBounds,
+    /// Texte visible attendu à l'écran (ex. "New Game"), distinct du nom interne.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Séquence d'activation à rejouer dans l'ordre; None = stratégie auto.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<Vec<ActivationStep>>,
+    /// État applicatif attendu après activation réussie (ex. "gameplay").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_state: Option<String>,
+    /// Position définie relativement à une autre zone plutôt qu'en absolu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<ZoneAnchor>,
+}
+
+/// Étape d'activation d'une zone. `TypeText` consomme le texte fourni à
+/// l'exécution (type_into_ui_element); les autres étapes sont autonomes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ActivationStep {
+    ClickCenter,
+    DoubleClick,
+    Key { code: String },
+    FocusThenKey { code: String },
+    TypeText,
+}
+
+/// Ancrage relatif: les bounds de la zone sont décalés (dx, dy) — en
+/// coordonnées normalisées — par rapport aux bounds de la zone `relative_to`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZoneAnchor {
+    pub relative_to: String,
+    #[serde(default)]
+    pub dx: f64,
+    #[serde(default)]
+    pub dy: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutZoneKind {
+    Button,
+    Input,
+    Textarea,
+    Dropdown,
+    Menu,
+    Checkbox,
+    Radio,
+    Link,
+    Text,
+    Region,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalizedBounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutSummary {
+    pub context: String,
+    pub name: String,
+    pub zones: usize,
+}
+
+/// État applicatif nommé (ex. "main_menu", "gameplay"), reconnu par les
+/// signatures visuelles de zones capturées sur une frame de référence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiStateFile {
+    pub version: u32,
+    pub context: String,
+    pub name: String,
+    /// Layout à utiliser quand cet état est détecté.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+    pub signatures: Vec<StateSignature>,
+}
+
+/// Empreinte d'une zone : dHash 8×8 (hexadécimal) + luminance moyenne du crop.
+/// Les bounds sont recopiés du layout au moment de la capture pour que la
+/// détection fonctionne sans recharger le layout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateSignature {
+    pub zone_id: String,
+    pub bounds: NormalizedBounds,
+    pub dhash: String,
+    pub mean_luma: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiStateSummary {
+    pub context: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+    pub signatures: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,6 +438,9 @@ pub enum WorkflowNodeData {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartNodeData {
+    /// Nature explicite de la cible. Optionnel pour relire les workflows v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_kind: Option<StartTargetKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_context: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -228,6 +456,10 @@ pub struct StartNodeData {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppExecutionMode { #[default] MainDesktop, VirtualDesktop }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartTargetKind { Window, Command, MainDesktop, VirtualDesktop }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -418,6 +650,8 @@ pub struct SaveMacroArgs {
     pub context: String,
     pub name: String,
     pub window_id: isize,
+    #[serde(default)]
+    pub params: Vec<MacroParam>,
     pub steps: Vec<MacroStep>,
 }
 
@@ -431,3 +665,27 @@ pub struct SaveWorkflowArgs { pub name: String, pub graph: WorkflowGraph }
 
 #[derive(Debug, Deserialize)]
 pub struct ExecuteWorkflowArgs { pub name: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveLayoutArgs {
+    pub context: String,
+    pub name: String,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub zones: Vec<LayoutZone>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ListLayoutsArgs {
+    #[serde(default)]
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct GetLayoutArgs {
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}

@@ -1,12 +1,13 @@
 // Câblage de l'UI : sélection de fenêtre, connexion au flux, injection input,
 // outils d'annotation vectoriels (overlay SVG aligné sur le canvas).
 
-import { InputController } from "./input";
+import { InputController, type KeyboardLayout } from "./input";
 import { StreamClient } from "./stream";
 import { Annotator, type Tool } from "./annotate";
 import { Rulers, RULER_THICKNESS } from "./rulers";
 import { MacroController } from "./macros";
 import { WorkflowEditor } from "./workflows";
+import { LayoutController } from "./layouts";
 import type { ServerMessage } from "./protocol";
 
 const canvas = document.getElementById("screen") as HTMLCanvasElement;
@@ -31,6 +32,7 @@ const scaleSlider = document.getElementById("scaleSlider") as HTMLInputElement;
 const scaleSliderVal = document.getElementById("scaleSliderVal") as HTMLSpanElement;
 const showCursorInput = document.getElementById("showCursor") as HTMLInputElement;
 const bgInput = document.getElementById("bgInput") as HTMLInputElement;
+const keyboardLayoutSelect = document.getElementById("keyboardLayout") as HTMLSelectElement;
 const webrtcToggle = document.getElementById("webrtcToggle") as HTMLInputElement;
 const recFpsInput = document.getElementById("recFps") as HTMLInputElement;
 const virtualCursor = document.getElementById("virtualCursor") as HTMLDivElement;
@@ -38,13 +40,6 @@ const focusWindowBtn = document.getElementById("focusWindow") as HTMLButtonEleme
 const launchCmdInput = document.getElementById("launchCmd") as HTMLInputElement;
 const btnLaunchVirtual = document.getElementById("btnLaunchVirtual") as HTMLButtonElement;
 const btnSendActiveToVirtual = document.getElementById("btnSendActiveToVirtual") as HTMLButtonElement;
-
-const zonesModal = document.getElementById("zonesModal") as HTMLDivElement;
-const zonesJsonArea = document.getElementById("zonesJsonArea") as HTMLTextAreaElement;
-const zonesClose = document.getElementById("zonesClose") as HTMLButtonElement;
-const zonesCopy = document.getElementById("zonesCopy") as HTMLButtonElement;
-const zonesImport = document.getElementById("zonesImport") as HTMLButtonElement;
-const zonesError = document.getElementById("zonesError") as HTMLDivElement;
 
 const confirmCloseModal = document.getElementById("confirmCloseModal") as HTMLDivElement;
 const confirmCloseText = document.getElementById("confirmCloseText") as HTMLParagraphElement;
@@ -151,6 +146,7 @@ function sendSelect(id: number, pin: string | null) {
   // Le panneau Macro peut démarrer dès la sélection utilisateur ; il ne
   // dépend plus du délai de redémarrage de la capture côté serveur.
   macros.selectTarget(id, windowContexts.get(id) ?? "unknown");
+  layoutEditor.selectTarget(id, windowContexts.get(id) ?? "unknown");
   stream.send({
     type: "select_window",
     id,
@@ -220,6 +216,19 @@ function saveDir(): string | null {
 }
 
 const input = new InputController(canvas, (msg) => stream.send(msg));
+const savedKeyboardLayout = localStorage.getItem("appmirror.keyboardLayout") as KeyboardLayout | null;
+const defaultKeyboardLayout: KeyboardLayout = navigator.language.toLowerCase().startsWith("fr") ? "azerty_fr" : "qwerty_us";
+keyboardLayoutSelect.value = savedKeyboardLayout === "azerty_fr" || savedKeyboardLayout === "qwerty_us"
+  ? savedKeyboardLayout
+  : defaultKeyboardLayout;
+input.setKeyboardLayout(keyboardLayoutSelect.value as KeyboardLayout);
+keyboardLayoutSelect.addEventListener("change", () => {
+  const layout = keyboardLayoutSelect.value as KeyboardLayout;
+  localStorage.setItem("appmirror.keyboardLayout", layout);
+  input.setKeyboardLayout(layout);
+  statusEl.textContent = `keyboard input: ${layout === "azerty_fr" ? "Azerty (FR)" : "Qwerty (US)"}`;
+  canvas.focus();
+});
 
 const rulers = new Rulers(rulerTop, rulerLeft, coordChip);
 const annot = new Annotator({
@@ -299,6 +308,7 @@ const stream = new StreamClient(canvas, {
   onFrameSize: (w, h) => {
     annot.setNativeSize(w, h);
     macros.setNativeSize(w, h);
+    layoutEditor.setNativeSize(w, h);
     layout();
   },
   onServerMessage: (msg: ServerMessage) => {
@@ -323,7 +333,7 @@ const stream = new StreamClient(canvas, {
             // Select dropdown classique
             const opt = document.createElement("option");
             opt.value = String(w.id);
-            opt.textContent = (w.locked ? "🔒 " : "") + (w.is_virtual ? "[V] " : "") + w.title;
+            opt.textContent = (w.locked ? "🔒 " : "") + (w.is_desktop ? "🖥 " : (w.is_virtual ? "[V] " : "")) + w.title;
             opt.dataset.locked = w.locked ? "true" : "false";
             select.appendChild(opt);
             
@@ -363,7 +373,7 @@ const stream = new StreamClient(canvas, {
               btn.style.borderColor = "#3a3f49";
             });
             
-            btn.innerHTML = `<span>${w.locked ? "🔒 " : ""}</span><span style="flex: 1; overflow: hidden; text-overflow: ellipsis;">${w.title}</span><span style="font-size: 0.7rem; opacity: 0.5;">Switch ➜</span>`;
+            btn.innerHTML = `<span>${w.locked ? "🔒 " : (w.is_desktop ? "🖥 " : "")}</span><span style="flex: 1; overflow: hidden; text-overflow: ellipsis;">${w.title}</span><span style="font-size: 0.7rem; opacity: 0.5;">Stream ➜</span>`;
             
             btn.addEventListener("click", () => {
               selectWindowAndStream(w.id, w.locked);
@@ -382,6 +392,7 @@ const stream = new StreamClient(canvas, {
             closeBtn.style.transition = "background 0.12s, border-color 0.12s";
             closeBtn.style.fontWeight = "bold";
             closeBtn.title = "Fermer cette application";
+            closeBtn.hidden = w.is_desktop;
             
             closeBtn.addEventListener("mouseover", () => {
               closeBtn.style.background = "#4a2424";
@@ -433,6 +444,8 @@ const stream = new StreamClient(canvas, {
       }
       case "selected":
         hidePinModal();
+        bgInput.checked = msg.background;
+        updateVirtualCursor();
         // L'injection d'input cible la fenêtre native → coords client natives.
         // L'overlay d'annotation, lui, est calé sur la frame (voir onFrameSize).
         input.setNativeSize(msg.width, msg.height);
@@ -493,6 +506,28 @@ const stream = new StreamClient(canvas, {
       case "workflow_failed":
         workflow.executionFinished(`workflow échoué${msg.node_id ? ` sur ${msg.node_id}` : ""} : ${msg.message}`);
         break;
+      case "layout_saved":
+        statusEl.textContent = `layout ${msg.name} sauvegardé pour ${msg.context} → ${msg.path}`;
+        layoutEditor.saved(msg.context, msg.name);
+        stream.send({ type: "list_layouts", context: msg.context });
+        break;
+      case "layout_list":
+        layoutEditor.showLibrary(msg.items);
+        break;
+      case "layout_loaded":
+        layoutEditor.load(msg.layout);
+        break;
+      case "state_saved":
+        statusEl.textContent = `state ${msg.name} captured for ${msg.context} (${msg.signatures} signature(s))`;
+        layoutEditor.refreshStates();
+        break;
+      case "state_list":
+        layoutEditor.showStates(msg.items);
+        break;
+      case "state_deleted":
+        statusEl.textContent = `state ${msg.name} deleted`;
+        layoutEditor.refreshStates();
+        break;
       case "notice":
         statusEl.textContent = `⚙️ ${msg.message}`;
         break;
@@ -531,6 +566,14 @@ const macros = new MacroController(
     canvas.focus();
   },
 );
+const layoutEditor = new LayoutController(
+  document.getElementById("layoutPanel") as HTMLElement,
+  annot,
+  (message) => stream.send(message),
+  (tool) => setTool(tool),
+  layout,
+  (message) => (statusEl.textContent = message),
+);
 const workflow = new WorkflowEditor(
   document.getElementById("workflowEditor") as HTMLElement,
   (message) => stream.send(message),
@@ -539,6 +582,7 @@ const workflow = new WorkflowEditor(
     main.hidden = open;
     if (open) {
       macros.close();
+      layoutEditor.close();
       toolbarEl.hidden = true;
     } else {
       applyToolbarVisible();
@@ -548,7 +592,15 @@ const workflow = new WorkflowEditor(
   (message) => (statusEl.textContent = message),
 );
 input.setObserver((message, text) => macros.observe(message, text));
-(document.getElementById("toggleMacros") as HTMLButtonElement).addEventListener("click", () => macros.togglePanel());
+(document.getElementById("toggleMacros") as HTMLButtonElement).addEventListener("click", () => {
+  layoutEditor.close();
+  macros.togglePanel();
+});
+(document.getElementById("toggleLayout") as HTMLButtonElement).addEventListener("click", () => {
+  macros.close();
+  workflow.close();
+  layoutEditor.toggle();
+});
 (document.getElementById("toggleWorkflow") as HTMLButtonElement).addEventListener("click", () => workflow.toggle());
 
 input.attach();
@@ -562,7 +614,6 @@ layout();
 let lastMouseEvent: MouseEvent | null = null;
 
 const toolButtons = [...document.querySelectorAll<HTMLButtonElement>("#toolbar [data-tool]")];
-const slicesJsonBtn = document.getElementById("slicesJsonBtn") as HTMLButtonElement;
 
 function setTool(t: Tool) {
   annot.setTool(t);
@@ -570,7 +621,6 @@ function setTool(t: Tool) {
   // intercepte le pointeur (pointer-events géré par l'Annotator).
   input.setEnabled(t === "cursor");
   stage.dataset.tool = t;
-  slicesJsonBtn.hidden = t !== "slice";
   for (const b of toolButtons) b.classList.toggle("active", b.dataset.tool === t);
   // La gouttière des règles change l'espace dispo : on recalcule la mise en page.
   layout();
@@ -674,42 +724,6 @@ syncFillOpacityEnabled();
 (document.getElementById("exportBtn") as HTMLButtonElement).addEventListener("click", () => {
   void annot.exportPng(canvas).catch((e) => (statusEl.textContent = `export: ${e}`));
 });
-slicesJsonBtn.addEventListener("click", () => {
-  zonesModal.style.display = "flex";
-  zonesJsonArea.value = annot.slicesJson();
-  zonesError.textContent = "";
-  zonesJsonArea.focus();
-});
-
-zonesClose.addEventListener("click", () => {
-  zonesModal.style.display = "none";
-});
-
-zonesCopy.addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText(zonesJsonArea.value);
-    statusEl.textContent = "Slice zones JSON copied to clipboard!";
-  } catch {
-    zonesError.textContent = "Failed to copy to clipboard";
-  }
-});
-
-zonesImport.addEventListener("click", () => {
-  try {
-    annot.importSlicesJson(zonesJsonArea.value);
-    zonesModal.style.display = "none";
-    statusEl.textContent = "Slice zones imported successfully!";
-  } catch (e: any) {
-    zonesError.textContent = e.message;
-  }
-});
-
-zonesModal.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    zonesModal.style.display = "none";
-  }
-});
-
 // ── Actions existantes ───────────────────────────────────────────────────────
 
 refreshBtn.addEventListener("click", () => stream.send({ type: "list_windows" }));

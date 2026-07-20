@@ -1,9 +1,19 @@
-import type { ClientMessage, MacroFile, MacroStep, MacroSummary } from "./protocol";
+import type { ClientMessage, MacroFile, MacroParam, MacroStep, MacroSummary } from "./protocol";
 
 type Sender = (message: ClientMessage) => void;
 
+/** Templates inserted by the "+ semantic step" control. */
+const SEMANTIC_TEMPLATES: Array<{ label: string; step: MacroStep }> = [
+  { label: "Activate element", step: { type: "activate_element", element: "zone name or label", strategy: "auto" } },
+  { label: "Type into element", step: { type: "type_into_element", element: "zone name or label", text: "{{value}}" } },
+  { label: "Wait for state", step: { type: "wait_for_state", state: "state name", timeout_ms: 5000 } },
+  { label: "Wait (ms)", step: { type: "wait_ms", duration_ms: 1000 } },
+  { label: "Call macro", step: { type: "call_macro", name: "macro name" } },
+];
+
 export class MacroController {
   private steps: MacroStep[] = [];
+  private params: MacroParam[] = [];
   private recording = false;
   private nativeW = 0;
   private nativeH = 0;
@@ -83,6 +93,15 @@ export class MacroController {
         }
         step = { type: "key", code: message.code, pressed: message.pressed };
         break;
+      case "text_input":
+        if (!message.text) return;
+        {
+          const previous = this.steps[this.steps.length - 1];
+          if (previous?.type === "text") previous.text += message.text;
+          else this.steps.push({ type: "text", text: message.text });
+          this.render();
+          return;
+        }
     }
     if (step) { this.steps.push(step); this.render(); }
   }
@@ -111,6 +130,18 @@ export class MacroController {
       this.setRecording(false);
       this.send({ type: "test_macro", steps: this.steps });
       this.onStatus("Test de la macro en cours…");
+    };
+    const addStep = this.panel.querySelector<HTMLSelectElement>("#macroAddStep")!;
+    for (const [index, template] of SEMANTIC_TEMPLATES.entries()) {
+      addStep.add(new Option(template.label, String(index)));
+    }
+    addStep.onchange = () => {
+      const template = SEMANTIC_TEMPLATES[Number(addStep.value)];
+      addStep.value = "";
+      if (!template) return;
+      this.steps.push(JSON.parse(JSON.stringify(template.step)) as MacroStep);
+      this.render();
+      this.onStatus("Semantic step added — click ✎ to edit its JSON fields.");
     };
     this.panel.querySelector<HTMLSelectElement>("#macroLibrary")!.onchange = (event) => {
       const option = (event.currentTarget as HTMLSelectElement).selectedOptions[0];
@@ -141,6 +172,7 @@ export class MacroController {
   load(file: MacroFile) {
     this.setRecording(false);
     this.steps = file.steps;
+    this.params = file.params ?? [];
     this.context = file.context;
     this.panel.querySelector<HTMLElement>("#macroContext")!.textContent = file.context;
     this.panel.querySelector<HTMLInputElement>("#macroName")!.value = file.name;
@@ -170,7 +202,7 @@ export class MacroController {
     if (!name) return this.onStatus("Saisissez un nom de macro");
     if (!this.steps.length) return this.onStatus("La macro ne contient aucune étape");
     this.setRecording(false);
-    this.send({ type: "save_macro", context: this.context, name, window_id: this.windowId, steps: this.steps });
+    this.send({ type: "save_macro", context: this.context, name, window_id: this.windowId, params: this.params, steps: this.steps });
   }
 
   private label(step: MacroStep): string {
@@ -180,6 +212,11 @@ export class MacroController {
       case "wheel": return `↕ Molette ${step.delta} — (${step.x.toFixed(3)}, ${step.y.toFixed(3)})`;
       case "key": return `⌨ ${step.code} — ${step.pressed ? "appui" : "relâchement"}`;
       case "text": return `⌨ Saisie texte — “${step.text}”`;
+      case "activate_element": return `🎯 Activate “${step.element}”${step.layout ? ` (${step.layout})` : ""} — ${step.strategy ?? "auto"}`;
+      case "type_into_element": return `🎯⌨ Type into “${step.element}” — “${step.text}”`;
+      case "wait_for_state": return `⏳ Wait for state “${step.state}” (≤ ${step.timeout_ms ?? 5000} ms)`;
+      case "wait_ms": return `⏳ Wait ${step.duration_ms} ms`;
+      case "call_macro": return `📦 Call macro “${step.name}”${step.context ? ` [${step.context}]` : ""}`;
     }
   }
 

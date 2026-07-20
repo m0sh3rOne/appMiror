@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use crate::app::AppState;
 use crate::capture::{self, CaptureSession};
 use crate::input;
-use crate::protocol::{ClientMessage, SaveMacroArgs, ServerMessage, WorkflowFile};
+use crate::protocol::{ClientMessage, SaveLayoutArgs, SaveMacroArgs, ServerMessage, WorkflowFile};
 use crate::recorder;
 
 type Sender = Arc<Mutex<SplitSink<WebSocket, Message>>>;
@@ -182,8 +182,16 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
 
             session.stop_capture().await;
 
+            let desktop_kind = capture::desktop_target_kind(id);
+            // Le bureau virtuel appMirror n'est pas le bureau d'entrée physique :
+            // SendInput viserait le bureau principal. PostMessage est donc le
+            // seul mode cohérent pour piloter ses fenêtres sans SwitchDesktop.
+            if desktop_kind == Some(true) {
+                session.input_bg = true;
+            }
+
             // En mode arrière-plan, on ne vole PAS le focus de l'hôte.
-            if !session.input_bg {
+            if !session.input_bg && desktop_kind.is_none() {
                 input::focus_window(id);
             }
             let (w, h) = input::client_size(id).unwrap_or((0, 0));
@@ -215,7 +223,7 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
                             }
                         }
                     }));
-                    send_json(sender, &ServerMessage::Selected { width: w, height: h }).await;
+                    send_json(sender, &ServerMessage::Selected { width: w, height: h, background: session.input_bg }).await;
                 }
                 Err(e) => {
                     send_json(sender, &ServerMessage::Error { message: e.to_string() }).await
@@ -271,13 +279,22 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
                 input::key(session.hwnd, &code, pressed);
             }
         }
+        ClientMessage::TextInput { text } => {
+            if let Some(hwnd) = session.hwnd {
+                if session.input_bg {
+                    input::text_bg(hwnd, &text);
+                } else {
+                    input::text(Some(hwnd), &text);
+                }
+            }
+        }
 
-        ClientMessage::SaveMacro { context, name, window_id, steps } => {
+        ClientMessage::SaveMacro { context, name, window_id, params, steps } => {
             if session.hwnd != Some(window_id) {
                 send_json(sender, &ServerMessage::Error { message: "la fenêtre de la macro n'est plus la fenêtre active".into() }).await;
                 return;
             }
-            match crate::macro_store::save(SaveMacroArgs { context, name: name.clone(), window_id, steps }).await {
+            match crate::macro_store::save(SaveMacroArgs { context, name: name.clone(), window_id, params, steps }).await {
                 Ok(path) => send_json(sender, &ServerMessage::MacroSaved { path: path.display().to_string(), name }).await,
                 Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
             }
@@ -296,7 +313,22 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
                 return;
             };
             let (width, height) = input::client_size(hwnd).unwrap_or((0, 0));
-            let file = crate::protocol::MacroFile { version: 1, context: "test".into(), name: "test".into(), window_id: hwnd, steps };
+            // Contexte réel de la fenêtre streamée : indispensable pour que les
+            // étapes sémantiques retrouvent les layouts/états du contexte.
+            let (locked_apps, allow_virtual_desktop) = {
+                let cfg_opt = state.config.lock().unwrap();
+                if let Some(cfg_mutex) = &*cfg_opt {
+                    let cfg = cfg_mutex.lock().unwrap();
+                    (cfg.locked_apps.clone(), cfg.allow_virtual_desktop)
+                } else {
+                    (Vec::new(), false)
+                }
+            };
+            let context = capture::list_windows(&locked_apps, allow_virtual_desktop)
+                .ok()
+                .and_then(|windows| windows.into_iter().find(|w| w.id == hwnd).map(|w| w.context.to_lowercase()))
+                .unwrap_or_else(|| "test".into());
+            let file = crate::protocol::MacroFile { version: 1, context, name: "test".into(), window_id: hwnd, params: Vec::new(), steps };
             match crate::macro_player::play(&file, crate::app::AttachedWindow { id: hwnd, width, height }).await {
                 Ok(steps) => send_json(sender, &ServerMessage::MacroPlayed { name: "test".into(), steps }).await,
                 Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
@@ -324,6 +356,80 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
             if let Err(message) = crate::workflow_store::validate(&graph) { send_json(sender, &ServerMessage::Error { message }).await; return; }
             spawn_workflow(WorkflowFile { version: 1, name: "test".into(), graph }, session.hwnd, sender.clone());
         }
+        ClientMessage::SaveLayout { context, name, source_width, source_height, zones } => {
+            let args = SaveLayoutArgs {
+                context: context.clone(),
+                name: name.clone(),
+                source_width,
+                source_height,
+                zones,
+            };
+            match crate::layout_store::save(args).await {
+                Ok(path) => send_json(sender, &ServerMessage::LayoutSaved {
+                    context,
+                    name,
+                    path: path.display().to_string(),
+                }).await,
+                Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+            }
+        }
+        ClientMessage::ListLayouts { context } => match crate::layout_store::list(context.as_deref()).await {
+            Ok(items) => send_json(sender, &ServerMessage::LayoutList { items }).await,
+            Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+        },
+        ClientMessage::LoadLayout { context, name } => match crate::layout_store::load_named(&context, &name).await {
+            Ok(layout) => send_json(sender, &ServerMessage::LayoutLoaded { layout }).await,
+            Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+        },
+        ClientMessage::CaptureState { context, name, layout, zones } => {
+            let frame = session
+                .frames
+                .as_ref()
+                .map(|rx| rx.borrow().clone())
+                .unwrap_or_default();
+            if frame.is_empty() {
+                send_json(sender, &ServerMessage::Error {
+                    message: "aucune frame disponible — sélectionnez une fenêtre d'abord".into(),
+                }).await;
+                return;
+            }
+            let result = async {
+                let img = image::load_from_memory(&frame).map_err(|e| format!("décodage frame: {e}"))?;
+                let signatures: Vec<crate::protocol::StateSignature> = zones
+                    .iter()
+                    .map(|zone| {
+                        let (dhash, mean_luma) = crate::detect::zone_signature(&img, &zone.bounds);
+                        crate::protocol::StateSignature {
+                            zone_id: zone.id.clone(),
+                            bounds: zone.bounds,
+                            dhash: format!("{dhash:016x}"),
+                            mean_luma,
+                        }
+                    })
+                    .collect();
+                let count = signatures.len();
+                crate::state_store::save(crate::protocol::UiStateFile {
+                    version: 1,
+                    context: context.clone(),
+                    name: name.clone(),
+                    layout,
+                    signatures,
+                }).await?;
+                Ok::<usize, String>(count)
+            }.await;
+            match result {
+                Ok(signatures) => send_json(sender, &ServerMessage::StateSaved { context, name, signatures }).await,
+                Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+            }
+        }
+        ClientMessage::ListStates { context } => match crate::state_store::list(context.as_deref()).await {
+            Ok(items) => send_json(sender, &ServerMessage::StateList { items }).await,
+            Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+        },
+        ClientMessage::DeleteState { context, name } => match crate::state_store::delete(&context, &name).await {
+            Ok(()) => send_json(sender, &ServerMessage::StateDeleted { context, name }).await,
+            Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+        },
 
         ClientMessage::Screenshot { dir } => {
             let frame = session

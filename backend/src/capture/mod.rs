@@ -82,6 +82,15 @@ pub fn close_window(hwnd: isize) -> anyhow::Result<()> {
     }
 }
 
+/// Identifie les cibles synthétiques « bureau complet ».
+/// `Some(false)` = principal, `Some(true)` = virtuel.
+pub fn desktop_target_kind(id: isize) -> Option<bool> {
+    #[cfg(windows)]
+    { crate::input::desktop::desktop_window_kind(id) }
+    #[cfg(not(windows))]
+    { let _ = id; None }
+}
+
 /// Démarre la capture de la fenêtre `hwnd` (HWND Windows / Window X11).
 ///
 /// Retourne une session (qu'il faut garder en vie et `stop()` en fin) et un

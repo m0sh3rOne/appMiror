@@ -1,5 +1,5 @@
 import type {
-  ClientMessage, MacroSummary, WorkflowFile, WorkflowGraph, WorkflowNodeData,
+  AppExecutionMode, ClientMessage, MacroSummary, StartTargetKind, WorkflowFile, WorkflowGraph, WorkflowNodeData,
   WorkflowHandle, WorkflowNode, WorkflowNodeType, WorkflowSummary, WindowInfo,
 } from "./protocol";
 
@@ -151,7 +151,7 @@ export class WorkflowEditor {
     else if (type === "loop") data = { repetitions: 2 };
     else if (type === "condition") data = { expression: "last_result == \"success\"" };
     else if (type === "wait") data = { durationMs: 500 };
-    else data = { executionMode: "main_desktop", focus: false };
+    else data = { targetKind: "command", executionMode: "main_desktop", focus: false };
     return { id, type, position: { x, y }, data };
   }
   private addNode(type: WorkflowNodeType) {
@@ -194,26 +194,53 @@ export class WorkflowEditor {
 
   private nodeFields(node: WorkflowNode, body: HTMLElement) {
     if (node.type === "start") {
-      const data = node.data as { appContext?: string | null; appTitle?: string | null; command?: string | null; executionMode?: "main_desktop" | "virtual_desktop"; focus?: boolean };
+      const data = node.data as { targetKind?: StartTargetKind | null; appContext?: string | null; appTitle?: string | null; command?: string | null; executionMode?: AppExecutionMode; focus?: boolean };
       const app = document.createElement("select");
-      app.append(new Option("— application active / commande —", ""));
-      for (const win of this.windows) {
+      app.append(
+        new Option("— application lancée par la commande —", "command"),
+        new Option("🖥 Main desktop — full view", "main_desktop"),
+        new Option("🖥 Virtual desktop — full view", "virtual_desktop"),
+      );
+      for (const win of this.windows.filter((item) => !item.is_desktop)) {
         const option = new Option(`${win.is_virtual ? "[V] " : ""}${win.title} — ${win.context}`, String(win.id));
-        option.dataset.context = win.context; option.dataset.title = win.title; app.add(option);
-        if (data.appContext === win.context && data.appTitle === win.title) app.value = String(win.id);
+        option.dataset.kind = "window"; option.dataset.context = win.context; option.dataset.title = win.title; app.add(option);
       }
+      const inferredKind: StartTargetKind = data.targetKind
+        ?? ((data.command && (!data.appContext || data.appContext === "unknown")) ? "command" : "window");
+      data.targetKind = inferredKind;
+      if (inferredKind === "window") {
+        const selected = [...app.options].find((option) => option.dataset.context === data.appContext && option.dataset.title === data.appTitle);
+        app.value = selected?.value ?? "command";
+        if (!selected && data.command) data.targetKind = "command";
+      } else app.value = inferredKind;
       const command = document.createElement("input"); command.type = "text"; command.placeholder = "e.g. notepad.exe or C:\\path\\app.exe"; command.value = data.command ?? "";
+      const mode = document.createElement("select"); mode.append(new Option("Main desktop", "main_desktop"), new Option("Virtual desktop", "virtual_desktop")); mode.value = data.executionMode ?? "main_desktop"; mode.onchange = () => data.executionMode = mode.value as AppExecutionMode;
       app.onchange = () => {
         const option = app.selectedOptions[0];
-        data.appContext = option.dataset.context ?? null;
-        data.appTitle = option.dataset.title ?? null;
-        if (!command.value && data.appContext && data.appContext !== "unknown") { command.value = data.appContext; data.command = data.appContext; }
+        const kind = (option.dataset.kind ?? option.value) as StartTargetKind;
+        data.targetKind = kind;
+        if (kind === "window") {
+          data.appContext = option.dataset.context ?? null;
+          data.appTitle = option.dataset.title ?? null;
+          if (!command.value && data.appContext && data.appContext !== "unknown") { command.value = data.appContext; data.command = data.appContext; }
+        } else {
+          data.appContext = null;
+          data.appTitle = null;
+          if (kind === "main_desktop" || kind === "virtual_desktop") data.executionMode = kind;
+        }
+        mode.value = data.executionMode ?? "main_desktop";
       };
-      command.oninput = () => data.command = command.value || null;
-      const mode = document.createElement("select"); mode.append(new Option("Main desktop", "main_desktop"), new Option("Virtual desktop", "virtual_desktop")); mode.value = data.executionMode ?? "main_desktop"; mode.onchange = () => data.executionMode = mode.value as "main_desktop" | "virtual_desktop";
+      command.oninput = () => {
+        data.command = command.value || null;
+        if (app.value === "command") {
+          data.targetKind = "command";
+          data.appContext = null;
+          data.appTitle = null;
+        }
+      };
       const focus = document.createElement("input"); focus.type = "checkbox"; focus.checked = data.focus ?? false; focus.onchange = () => data.focus = focus.checked;
-      const focusLabel = document.createElement("label"); focusLabel.className = "wf-check"; focusLabel.append(focus, " Focus application at workflow start");
-      body.append(this.field("Target application", app), this.field("Launch command", command), this.field("Execution mode", mode), focusLabel);
+      const focusLabel = document.createElement("label"); focusLabel.className = "wf-check"; focusLabel.append(focus, " Focus target and use foreground input");
+      body.append(this.field("Target", app), this.field("Launch command", command), this.field("Launch location", mode), focusLabel);
     } else if (node.type === "macro") {
       const data = node.data as { macroName: string; macroContext?: string | null; injectionMode: "foreground" | "background" };
       const macro = document.createElement("select");

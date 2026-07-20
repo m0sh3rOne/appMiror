@@ -27,6 +27,25 @@ pub fn focus_window(hwnd: isize) {
     let _ = hwnd;
 }
 
+/// Vérifie si la fenêtre est réellement au premier plan. Utilisé par le
+/// runner après un lancement, car SetForegroundWindow peut être différé/refusé.
+pub fn is_foreground_window(hwnd: isize) -> bool {
+    #[cfg(windows)]
+    {
+        imp::is_foreground_window(hwnd)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = hwnd;
+        true
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = hwnd;
+        false
+    }
+}
+
 /// Dimensions client (px) de la fenêtre — repère natif renvoyé au frontend.
 pub fn client_size(hwnd: isize) -> Option<(i32, i32)> {
     #[cfg(any(windows, target_os = "linux"))]
@@ -66,6 +85,16 @@ pub fn key(hwnd: Option<isize>, code: &str, pressed: bool) {
     imp::key(hwnd, code, pressed);
     #[cfg(not(any(windows, target_os = "linux")))]
     let _ = (hwnd, code, pressed);
+}
+
+/// Saisie Unicode au premier plan, indépendante du layout physique.
+pub fn text(hwnd: Option<isize>, text: &str) {
+    #[cfg(windows)]
+    imp::text(hwnd, text);
+    #[cfg(target_os = "linux")]
+    imp::text_bg(hwnd.unwrap_or(0), text);
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let _ = (hwnd, text);
 }
 
 // ── Injection en arrière-plan (sans focus) ──────────────────────────────────

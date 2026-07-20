@@ -49,6 +49,21 @@ cargo run          # écoute sur http://127.0.0.1:8080 (ws sur /ws)
 
 En dev : ouvrez http://localhost:5173. En build statique : http://127.0.0.1:8080.
 
+## Layouts UI pour les agents MCP
+
+Le module **Layout** permet de tracer sur le stream des zones sémantiques
+(`button`, `input`, `dropdown`, `menu`, etc.). Chaque plan est associé au
+contexte du processus actif et une même application peut posséder plusieurs
+layouts nommés. Les coordonnées sont persistées sous forme normalisée dans
+`<Pictures>/appMirror/memories/layouts/` afin de rester valides après un
+redimensionnement.
+
+Les agents MCP peuvent utiliser `list_layouts` puis `get_layout` pour obtenir
+directement ce plan. `inspect_ui_elements` combine également les contrôles
+natifs détectés avec tous les layouts utilisateur du contexte attaché. Le
+centre de `bounds` fournit une cible normalisée directement exploitable par
+`inject_input`.
+
 ## Latence & sécurité — notes POC
 
 - `SendInput` agit sur la **fenêtre au premier plan** : le backend appelle

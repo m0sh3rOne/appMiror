@@ -113,6 +113,7 @@ pub fn list_windows(locked_apps: &[String]) -> anyhow::Result<Vec<WindowInfo>> {
             title,
             locked,
             is_virtual: false,
+            is_desktop: false,
             context: proc_name.unwrap_or_else(|| "unknown".into()),
         });
     }

@@ -428,7 +428,8 @@ impl eframe::App for GuiApp {
                         ui.label("  • focus_window: Re-restore & re-focus the attached window (recover from lost focus / minimized state).");
                         ui.label("  • inject_input: Keyboard (keys/text) & mouse — action: mouse_move, button, click, double_click, drag (x,y → to_x,to_y), wheel.");
                         ui.label("  • get_window_screenshot: Capture real-time base64 JPEG screen feedback.");
-                        ui.label("  • inspect_ui_elements: List child window controls with text & normalized coordinates.");
+                        ui.label("  • inspect_ui_elements: Combine native controls with user-defined UI layouts.");
+                        ui.label("  • list_layouts / get_layout: Retrieve named application plans and normalized clickable/input zones.");
                         ui.add_space(5.0);
                         ui.heading("AI Developer Tips:");
                         ui.label("  • AZERTY keyboards: Digits require holding down ShiftLeft.");

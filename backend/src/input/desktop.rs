@@ -7,6 +7,7 @@ use windows::Win32::System::StationsAndDesktops::{
     CreateDesktopW, GetThreadDesktop, HDESK, OpenDesktopW, SetThreadDesktop, DESKTOP_CONTROL_FLAGS,
 };
 use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
 
 static VIRTUAL_DESKTOP: Mutex<Option<isize>> = Mutex::new(None);
 
@@ -45,6 +46,36 @@ pub fn get_or_create_virtual_desktop() -> Option<isize> {
             None
         }
     }
+}
+
+/// HWND de la surface du bureau principal ou du bureau appMirror.
+/// Ces handles sont exposés comme cibles synthétiques pour permettre la
+/// capture du bureau complet dans l'interface web.
+pub fn desktop_window(is_virtual: bool) -> Option<isize> {
+    if !is_virtual {
+        return Some(unsafe { GetDesktopWindow() }.0 as isize);
+    }
+    let hdesk = get_or_create_virtual_desktop()?;
+    Some(run_on_desktop(hdesk, || unsafe { GetDesktopWindow() }.0 as isize))
+}
+
+/// Retourne le HDESK auquel appartient une cible « bureau complet ».
+/// `None` signifie soit une fenêtre normale, soit le bureau principal (aucun
+/// rattachement spécial n'est nécessaire pour celui-ci).
+pub fn virtual_desktop_for_window(hwnd: isize) -> Option<isize> {
+    let virtual_hwnd = desktop_window(true)?;
+    (virtual_hwnd == hwnd).then(get_or_create_virtual_desktop).flatten()
+}
+
+pub fn is_desktop_window(hwnd: isize) -> bool {
+    desktop_window_kind(hwnd).is_some()
+}
+
+/// `Some(false)` = bureau principal, `Some(true)` = bureau virtuel appMirror.
+pub fn desktop_window_kind(hwnd: isize) -> Option<bool> {
+    if desktop_window(false) == Some(hwnd) { return Some(false); }
+    if desktop_window(true) == Some(hwnd) { return Some(true); }
+    None
 }
 
 pub fn run_on_desktop<F, R>(hdesk_val: isize, f: F) -> R
@@ -165,4 +196,3 @@ pub fn get_process_image_path(hwnd: isize) -> Option<String> {
         }
     }
 }
-

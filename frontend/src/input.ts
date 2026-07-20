@@ -6,6 +6,7 @@ import type { ClientMessage, MouseButtonName } from "./protocol";
 
 type Sender = (msg: ClientMessage) => void;
 export type InputObserver = (msg: ClientMessage, text?: string) => void;
+export type KeyboardLayout = "azerty_fr" | "qwerty_us";
 
 const BUTTON_MAP: Record<number, MouseButtonName> = {
   0: "left",
@@ -21,6 +22,7 @@ export class InputController {
   /** false = injection suspendue (un outil d'annotation est actif). */
   private enabled = true;
   private observer: InputObserver | null = null;
+  private keyboardLayout: KeyboardLayout = "qwerty_us";
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -38,6 +40,22 @@ export class InputController {
 
   setObserver(observer: InputObserver) {
     this.observer = observer;
+  }
+
+  setKeyboardLayout(layout: KeyboardLayout) {
+    this.keyboardLayout = layout;
+  }
+
+  private shouldSendSemanticText(e: KeyboardEvent): boolean {
+    // En AZERTY, KeyboardEvent.code décrit toujours la position physique
+    // QWERTY (la touche « A » remonte KeyQ). `key` contient en revanche le
+    // caractère réellement voulu, y compris les accents et la rangée chiffrée.
+    // Ctrl/Alt/Meta restent physiques afin de préserver les raccourcis.
+    return this.keyboardLayout === "azerty_fr"
+      && e.key.length === 1
+      && !e.ctrlKey
+      && !e.altKey
+      && !e.metaKey;
   }
 
   private emit(msg: ClientMessage, text?: string) {
@@ -110,11 +128,16 @@ export class InputController {
       if (!this.enabled) return;
       e.preventDefault();
       if (e.repeat) return;
+      if (this.shouldSendSemanticText(e)) {
+        this.emit({ type: "text_input", text: e.key }, e.key);
+        return;
+      }
       this.emit({ type: "key", code: e.code, pressed: true }, e.key.length === 1 ? e.key : undefined);
     });
     c.addEventListener("keyup", (e) => {
       if (!this.enabled) return;
       e.preventDefault();
+      if (this.shouldSendSemanticText(e)) return;
       this.emit({ type: "key", code: e.code, pressed: false }, e.key.length === 1 ? e.key : undefined);
     });
   }

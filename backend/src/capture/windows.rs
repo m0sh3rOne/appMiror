@@ -56,18 +56,27 @@ pub fn start_gdi_capture(
     quality: u8,
     scale: f32,
     tx: std::sync::Arc<watch::Sender<Vec<u8>>>,
+    desktop: Option<isize>,
 ) -> anyhow::Result<GdiCaptureSession> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     
     let thread = std::thread::spawn(move || {
         use windows::Win32::Foundation::{HWND, RECT};
-        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+        use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect, IsWindowVisible};
         use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
         use windows::Win32::Graphics::Gdi::{
-            CreateCompatibleDC, CreateCompatibleBitmap, SelectObject, DeleteDC, DeleteObject, GetDC, ReleaseDC, GetDIBits, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BitBlt, SRCCOPY
+            CreateCompatibleDC, CreateCompatibleBitmap, SelectObject, DeleteDC, DeleteObject, GetDC, ReleaseDC, GetDIBits, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BitBlt, PatBlt, BLACKNESS, SRCCOPY
         };
         use std::time::Duration;
+
+        // Un thread neuf peut être rattaché au bureau Win32 caché avant toute
+        // création de fenêtre ou de hook. GetDC/PrintWindow lisent alors la
+        // surface du bureau virtuel au lieu du bureau utilisateur principal.
+        if let Some(hdesk) = desktop {
+            use windows::Win32::System::StationsAndDesktops::{HDESK, SetThreadDesktop};
+            let _ = unsafe { SetThreadDesktop(HDESK(hdesk as *mut core::ffi::c_void)) };
+        }
         
         let h = HWND(hwnd as *mut core::ffi::c_void);
         
@@ -86,12 +95,42 @@ pub fn start_gdi_capture(
                     let hbitmap = CreateCompatibleBitmap(hdc_screen, width as i32, height as i32);
                     let old_obj = SelectObject(hdc_mem, hbitmap);
                     
-                    let mut success = PrintWindow(h, hdc_mem, PRINT_WINDOW_FLAGS(2)).as_bool();
-                    if !success {
-                        // fallback to BitBlt
-                        let hdc_win = GetDC(h);
-                        success = BitBlt(hdc_mem, 0, 0, width as i32, height as i32, hdc_win, 0, 0, SRCCOPY).is_ok();
-                        let _ = ReleaseDC(h, hdc_win);
+                    let mut success;
+                    if desktop.is_some() {
+                        // Un bureau Win32 inactif n'est pas composité dans un
+                        // framebuffer lisible. On reconstruit donc sa vue en
+                        // peignant ses fenêtres de bas en haut avec PrintWindow.
+                        success = PatBlt(hdc_mem, 0, 0, width as i32, height as i32, BLACKNESS).as_bool();
+                        if let Ok(mut windows) = Window::enumerate() {
+                            windows.reverse();
+                            for window in windows {
+                                let wh = HWND(window.as_raw_hwnd());
+                                if !IsWindowVisible(wh).as_bool() { continue; }
+                                let mut wr = RECT::default();
+                                if GetWindowRect(wh, &mut wr).is_err() { continue; }
+                                let ww = (wr.right - wr.left).max(0);
+                                let whh = (wr.bottom - wr.top).max(0);
+                                if ww == 0 || whh == 0 { continue; }
+                                let window_dc = CreateCompatibleDC(hdc_screen);
+                                let window_bitmap = CreateCompatibleBitmap(hdc_screen, ww, whh);
+                                let old_window_obj = SelectObject(window_dc, window_bitmap);
+                                if PrintWindow(wh, window_dc, PRINT_WINDOW_FLAGS(2)).as_bool() {
+                                    let _ = BitBlt(hdc_mem, wr.left, wr.top, ww, whh, window_dc, 0, 0, SRCCOPY);
+                                    success = true;
+                                }
+                                let _ = SelectObject(window_dc, old_window_obj);
+                                let _ = DeleteObject(window_bitmap);
+                                let _ = DeleteDC(window_dc);
+                            }
+                        }
+                    } else {
+                        success = PrintWindow(h, hdc_mem, PRINT_WINDOW_FLAGS(2)).as_bool();
+                        if !success {
+                            // fallback to BitBlt
+                            let hdc_win = GetDC(h);
+                            success = BitBlt(hdc_mem, 0, 0, width as i32, height as i32, hdc_win, 0, 0, SRCCOPY).is_ok();
+                            let _ = ReleaseDC(h, hdc_win);
+                        }
                     }
                     
                     if success {
@@ -161,8 +200,7 @@ pub fn start_gdi_capture(
 #[cfg(windows)]
 fn get_process_name(hwnd: isize) -> Option<String> {
     use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
-    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    use windows::Win32::System::ProcessStatus::GetModuleBaseNameW;
+    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows::Win32::Foundation::{CloseHandle, HWND};
 
     unsafe {
@@ -173,11 +211,13 @@ fn get_process_name(hwnd: isize) -> Option<String> {
             return None;
         }
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut name = [0u16; 260];
-        let len = GetModuleBaseNameW(handle, None, &mut name);
+        let mut name = vec![0u16; 2048];
+        let mut len = name.len() as u32;
+        let result = QueryFullProcessImageNameW(handle, PROCESS_NAME_FORMAT(0), windows::core::PWSTR(name.as_mut_ptr()), &mut len);
         let _ = CloseHandle(handle);
-        if len > 0 {
-            Some(String::from_utf16_lossy(&name[..len as usize]))
+        if result.is_ok() && len > 0 {
+            let path = String::from_utf16_lossy(&name[..len as usize]);
+            std::path::Path::new(&path).file_name().map(|value| value.to_string_lossy().into_owned())
         } else {
             None
         }
@@ -186,6 +226,29 @@ fn get_process_name(hwnd: isize) -> Option<String> {
 
 pub fn list_windows(locked_apps: &[String], allow_virtual_desktop: bool) -> anyhow::Result<Vec<WindowInfo>> {
     let mut out = Vec::new();
+
+    if let Some(id) = crate::input::desktop::desktop_window(false) {
+        out.push(WindowInfo {
+            id,
+            title: "Main desktop — full view".into(),
+            locked: false,
+            is_virtual: false,
+            is_desktop: true,
+            context: "desktop".into(),
+        });
+    }
+    if allow_virtual_desktop {
+        if let Some(id) = crate::input::desktop::desktop_window(true) {
+            out.push(WindowInfo {
+                id,
+                title: "Virtual desktop — full view".into(),
+                locked: false,
+                is_virtual: true,
+                is_desktop: true,
+                context: "desktop".into(),
+            });
+        }
+    }
     
     // Énumère sur le bureau actif
     let _ = enumerate_desktop_windows(&mut out, locked_apps, false);
@@ -236,6 +299,7 @@ fn enumerate_desktop_windows(out: &mut Vec<WindowInfo>, locked_apps: &[String], 
             title,
             locked,
             is_virtual,
+            is_desktop: false,
             context: proc_name.unwrap_or_else(|| "unknown".into()),
         });
     }
@@ -275,6 +339,12 @@ pub fn start(
     let tx = std::sync::Arc::new(tx);
     let tx_clone = tx.clone();
 
+    if crate::input::desktop::is_desktop_window(hwnd) {
+        let desktop = crate::input::desktop::virtual_desktop_for_window(hwnd);
+        let session = start_gdi_capture(hwnd, quality, scale, tx_clone, desktop)?;
+        return Ok((CaptureSession::Gdi(session), rx));
+    }
+
     let cursor = if show_cursor {
         CursorCaptureSettings::WithCursor
     } else {
@@ -296,7 +366,7 @@ pub fn start(
         Ok(control) => Ok((CaptureSession::Wgc(control), rx)),
         Err(e) => {
             tracing::warn!("WGC capture failed: {:?}. Falling back to GDI capture.", e);
-            match start_gdi_capture(hwnd, quality, scale, tx_clone) {
+            match start_gdi_capture(hwnd, quality, scale, tx_clone, None) {
                 Ok(gdi_session) => Ok((CaptureSession::Gdi(gdi_session), rx)),
                 Err(gdi_err) => Err(anyhow::anyhow!("Both WGC and GDI capture failed. WGC: {:?}, GDI: {:?}", e, gdi_err)),
             }

@@ -77,6 +77,7 @@
       /* Bouton toggle actif (toolbar visible). */
       #toggleToolbar.active { background: #2f6fb3; border-color: #4a8fd6; color: #fff; }
       #toggleMacros.active { background: #2f6fb3; border-color: #4a8fd6; color: #fff; }
+      #toggleLayout.active { background: #b8791e; border-color: #e0a13d; color: #fff; }
       #toggleWorkflow.active { background: #7556c9; border-color: #9678e8; color: #fff; }
       button {
         display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem;
@@ -152,6 +153,48 @@
         border-left: 1px solid #343944; box-shadow: -8px 0 24px rgba(0,0,0,.22);
       }
       #macroPanel[hidden] { display: none; }
+      #layoutPanel {
+        flex: 0 0 410px; min-width: 350px; max-width: 44vw; min-height: 0;
+        display: flex; flex-direction: column; background: #191c22;
+        border-left: 1px solid #4d3c22; box-shadow: -8px 0 24px rgba(0,0,0,.22);
+      }
+      #layoutPanel[hidden] { display:none; }
+      .layout-actions { display:grid; grid-template-columns:repeat(2,1fr); gap:.4rem; padding:.75rem; }
+      .layout-library { display:flex; gap:.4rem; padding:0 .75rem .6rem; }
+      .layout-library select { flex:1; min-width:0; }
+      #layoutDraw { margin:0 .75rem .65rem; background:#8f5e18; border-color:#b8791e; color:#fff; }
+      #layoutDraw.active { background:#b8791e; border-color:#e0a13d; }
+      #layoutZones { flex:1; min-height:100px; overflow:auto; padding:.1rem .7rem .7rem; }
+      .layout-empty { opacity:.55; text-align:center; line-height:1.5; margin:1.5rem .5rem; font-size:.82rem; }
+      .layout-zone { display:flex; flex-direction:column; gap:.4rem; margin:.5rem 0; padding:.65rem; background:#252a33; border:1px solid #444b57; border-left:4px solid #b8791e; border-radius:7px; }
+      .layout-zone-head { display:flex; align-items:center; gap:.4rem; }
+      .layout-zone-head select { flex:1; min-width:0; }
+      .layout-zone-head button { min-height:1.8rem; padding:.15rem .5rem; color:#ff9898; }
+      .layout-zone input { width:100%; box-sizing:border-box; }
+      .layout-zone small { opacity:.55; font-variant-numeric:tabular-nums; }
+      .zone-activation { display:flex; flex-direction:column; gap:.35rem; padding:.4rem; background:#20242c; border:1px solid #3a404c; border-radius:6px; }
+      .zone-activation-steps { display:flex; flex-wrap:wrap; gap:.3rem; }
+      .zone-activation-step { display:inline-flex; align-items:center; gap:.3rem; padding:.1rem .4rem; background:#2d3644; border:1px solid #46536a; border-radius:5px; font-size:.78rem; }
+      .zone-activation-step button { min-height:1.3rem; padding:0 .3rem; color:#ff9898; background:none; border:none; cursor:pointer; }
+      .zone-activation-add { display:flex; gap:.35rem; }
+      .zone-activation-add select { flex:1; min-width:0; }
+      .zone-activation-add input { flex:1; min-width:0; }
+      .zone-activation-add button { white-space:nowrap; }
+      .layout-states { display:flex; flex-direction:column; gap:.45rem; padding:.6rem .75rem; border-top:1px solid #343944; }
+      .layout-states label { font-size:.72rem; font-weight:700; letter-spacing:.4px; }
+      .layout-states-list { display:flex; flex-direction:column; gap:.3rem; max-height:7.5rem; overflow:auto; }
+      .layout-state { display:flex; align-items:center; gap:.4rem; padding:.3rem .5rem; background:#252a33; border:1px solid #444b57; border-left:4px solid #2f6fb3; border-radius:6px; font-size:.8rem; }
+      .layout-state .state-name { font-weight:700; }
+      .layout-state small { opacity:.6; flex:1; }
+      .layout-state button { min-height:1.5rem; padding:.05rem .4rem; color:#ff9898; }
+      .layout-states-add { display:flex; gap:.4rem; }
+      .layout-states-add input { flex:1; min-width:0; box-sizing:border-box; }
+      #stateCapture { background:#2f6fb3; border-color:#4a8fd6; color:#fff; white-space:nowrap; }
+      .layout-footer { display:flex; flex-direction:column; gap:.5rem; padding:.75rem; border-top:1px solid #343944; }
+      .layout-footer label { font-size:.72rem; font-weight:700; letter-spacing:.4px; }
+      #layoutName { width:100%; box-sizing:border-box; }
+      .layout-footer-actions { display:grid; grid-template-columns:1fr 1.5fr; gap:.45rem; }
+      #layoutSave { background:#269b4c; border-color:#35b85f; color:#fff; }
       .macro-head { display:flex; align-items:center; justify-content:space-between; padding:.8rem; border-bottom:1px solid #343944; }
       .macro-head h2 { margin:0; font-size:1rem; letter-spacing:.3px; }
       #macroRecord { margin:.9rem; padding:.75rem; color:#fff; background:#c83d43; border-color:#e45459; }
@@ -159,6 +202,8 @@
       .macro-library { display:flex; gap:.45rem; padding:0 .9rem .7rem; }
       .macro-library select { flex:1; min-width:0; }
       #macroTest { margin:0 .9rem .8rem; padding:.65rem; background:#2f6fb3; border-color:#4a8fd6; color:#fff; }
+      .macro-add-step { padding:0 .9rem .6rem; }
+      .macro-add-step select { width:100%; box-sizing:border-box; }
       #macroSteps { flex:1; min-height:120px; overflow:auto; padding:0 .7rem .7rem; }
       .macro-step { display:flex; align-items:flex-start; justify-content:space-between; gap:.5rem; margin:.5rem 0; padding:.75rem; background:#262a33; border:1px solid #3a404c; border-left:4px solid #626a78; border-radius:7px; font-size:.84rem; }
       .macro-step[draggable="true"] { cursor: grab; }
@@ -175,7 +220,7 @@
       .macro-footer label { font-size:.72rem; font-weight:700; letter-spacing:.4px; }
       #macroName { width:100%; box-sizing:border-box; }
       #macroSave { padding:.7rem; background:#269b4c; border-color:#35b85f; color:#fff; }
-      @media (max-width: 850px) { #macroPanel { position:fixed; z-index:20; right:0; top:0; bottom:0; max-width:100vw; width:min(410px,100vw); } }
+      @media (max-width: 850px) { #macroPanel, #layoutPanel { position:fixed; z-index:20; right:0; top:0; bottom:0; max-width:100vw; width:min(410px,100vw); } }
 
       /* ── Éditeur visuel de workflows ───────────────────────────────── */
       #workflowEditor { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; background:#101217; }
@@ -354,6 +399,7 @@
         <button id="shot" title="Save the current frame as JPEG">📷 Capture</button>
         <button id="rec" title="Record a sequence of images (JPEG)">⏺ REC</button>
         <button id="toggleMacros" title="Show / hide macro workflows">⚙⚙ Macro</button>
+        <button id="toggleLayout" title="Define UI zones exposed to MCP agents">▦ Layout</button>
         <button id="toggleWorkflow" title="Open visual workflow editor">⌘ Workflow</button>
       </div>
 
@@ -373,8 +419,6 @@
       <button class="tool" data-tool="marker" title="Marker (highlighter)">🖍️<span class="lbl">Marker</span></button>
       <span class="sep"></span>
       <button class="tool" data-tool="ruler" title="Rulers &amp; measure: drag to measure, drag from a ruler for a guide">📏<span class="lbl">Ruler</span></button>
-      <button class="tool" data-tool="slice" title="Slice into zones">✂️<span class="lbl">Slice</span></button>
-      <span class="sep"></span>
       <input type="color" id="annColor" value="#ff3355" title="Color" />
       <label title="Stroke width"><input type="range" id="annWidth" min="1" max="16" step="1" value="4" /><span id="annWidthVal">4</span></label>
       <label title="Fill shapes"><input type="checkbox" id="annFill" /> Fill</label>
@@ -384,7 +428,6 @@
       <button id="redoBtn" title="Redo (Ctrl+Y)">↷</button>
       <button id="clearBtn" title="Clear all">🗑</button>
       <button id="exportBtn" title="Download frame + annotations as PNG">💾 PNG</button>
-      <button id="slicesJsonBtn" hidden title="Copy slice zones (native px) as JSON">⧉ Zones JSON</button>
     </div>
 
     <div id="workspace">
@@ -442,11 +485,47 @@
         <select id="macroLibrary" hidden aria-label="Macros sauvegardées"></select>
       </div>
       <button id="macroTest">▶ Test Macro</button>
+      <div class="macro-add-step">
+        <select id="macroAddStep" aria-label="Insert a semantic step">
+          <option value="">＋ Add semantic step…</option>
+        </select>
+      </div>
       <section id="macroSteps" aria-live="polite"></section>
       <div class="macro-footer">
         <label for="macroName">NOM DE LA MACRO :</label>
         <input id="macroName" type="text" value="bypass_login_v1" maxlength="120" />
         <button id="macroSave">💾 Sauvegarder la Macro Workflow</button>
+      </div>
+    </aside>
+    <aside id="layoutPanel" hidden aria-label="Application UI layout editor">
+      <div class="macro-head">
+        <h2>LAYOUT — [<span id="layoutContext">aucune application</span>]</h2>
+        <button id="layoutClose" title="Fermer le module Layout">Close [X]</button>
+      </div>
+      <div class="layout-actions">
+        <button id="layoutNew">＋ New</button>
+        <button id="layoutLoad">📂 Load</button>
+      </div>
+      <div class="layout-library">
+        <select id="layoutLibrary" aria-label="Layouts de l'application"><option value="">— aucun layout —</option></select>
+      </div>
+      <button id="layoutDraw">✂ Draw UI zone</button>
+      <section id="layoutZones" aria-live="polite"></section>
+      <div class="layout-states">
+        <label for="stateName">STATES (visual signatures):</label>
+        <div id="stateList" class="layout-states-list"></div>
+        <div class="layout-states-add">
+          <input id="stateName" type="text" placeholder="State name (e.g. main_menu)" maxlength="120" />
+          <button id="stateCapture" title="Hash every zone of this layout on the current frame and save it as a recognizable state">📸 Capture state</button>
+        </div>
+      </div>
+      <div class="layout-footer">
+        <label for="layoutName">NOM DU LAYOUT :</label>
+        <input id="layoutName" type="text" value="layout_1" maxlength="120" />
+        <div class="layout-footer-actions">
+          <button id="layoutJson">{ } Edit JSON</button>
+          <button id="layoutSave">💾 Save Layout for MCP</button>
+        </div>
       </div>
     </aside>
     </div>
@@ -490,14 +569,14 @@
         </div>
       </div>
     </div>
-    <!-- Zones JSON Modal -->
+    <!-- Layout JSON Modal -->
     <div id="zonesModal" style="display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); z-index: 1000; align-items: center; justify-content: center;">
       <div style="background: #1d2026; padding: 1.5rem; border-radius: 8px; border: 1px solid #3a3f49; width: 480px; text-align: left; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.6); font-family: system-ui, sans-serif; display: flex; flex-direction: column; gap: 1rem;">
         <h3 style="margin: 0; color: #fff; display: flex; align-items: center; gap: 0.5rem;">
-          <span>✂️</span> Slice Zones JSON Import/Export
+          <span>▦</span> Application Layout JSON
         </h3>
         <p style="font-size: 0.85rem; opacity: 0.8; margin: 0; color: #e6e6e6;">
-          Copy the current zones JSON below, or paste a new JSON array to import.
+          Edit the complete UI plan exposed to MCP agents. Legacy Slice arrays can still be imported.
         </p>
         <textarea
           id="zonesJsonArea"
@@ -546,6 +625,16 @@
           </label>
           <label class="opt" title="Use WebRTC/H.264 streaming instead of WebSocket/JPEG">
             <input type="checkbox" id="webrtcToggle" checked /> WebRTC / H.264 streaming
+          </label>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-title">Keyboard Input</div>
+          <label class="settings-row"><span>Layout</span>
+            <select id="keyboardLayout" title="Keyboard layout used by the browser controlling the remote target">
+              <option value="azerty_fr">Azerty (FR)</option>
+              <option value="qwerty_us">Qwerty (US)</option>
+            </select>
           </label>
         </div>
 

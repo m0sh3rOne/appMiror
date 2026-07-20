@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::protocol::{MacroFile, MacroStep, MacroSummary, SaveMacroArgs};
+use crate::protocol::{MacroFile, MacroParam, MacroParamKind, MacroStep, MacroSummary, SaveMacroArgs};
 
 pub fn default_dir() -> PathBuf {
     crate::recorder::default_dir().join("memories").join("macros")
@@ -47,8 +47,45 @@ fn validate_step(step: &MacroStep) -> Result<(), String> {
         }
         MacroStep::Key { code, .. } if code.trim().is_empty() => Err("code clavier vide".into()),
         MacroStep::Text { text } if text.is_empty() => Err("texte vide".into()),
+        MacroStep::ActivateElement { element, strategy, .. } => {
+            if element.trim().is_empty() { return Err("element vide".into()); }
+            match strategy.as_deref() {
+                None => Ok(()),
+                // Les valeurs paramétrées ne sont vérifiables qu'à l'exécution.
+                Some(s) if s.contains("{{") => Ok(()),
+                Some("auto" | "click" | "click_then_enter" | "double_click") => Ok(()),
+                Some(other) => Err(format!("stratégie inconnue: {other}")),
+            }
+        }
+        MacroStep::TypeIntoElement { element, .. } if element.trim().is_empty() => Err("element vide".into()),
+        MacroStep::WaitForState { state, timeout_ms } => {
+            if state.trim().is_empty() { return Err("state vide".into()); }
+            if timeout_ms.is_some_and(|t| t > 300_000) { return Err("timeout_ms > 300 000".into()); }
+            Ok(())
+        }
+        MacroStep::WaitMs { duration_ms } if *duration_ms > 300_000 => Err("duration_ms > 300 000".into()),
+        MacroStep::CallMacro { name, .. } if name.trim().is_empty() => Err("nom de macro vide".into()),
         _ => Ok(()),
     }
+}
+
+fn validate_params(params: &[MacroParam]) -> Result<(), String> {
+    if params.len() > 50 { return Err("plus de 50 paramètres".into()); }
+    let mut seen = std::collections::HashSet::new();
+    for param in params {
+        let name = param.name.trim();
+        if name.is_empty() { return Err("paramètre sans nom".into()); }
+        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(format!("nom de paramètre invalide: {name} (alphanumérique et _ uniquement)"));
+        }
+        if !seen.insert(name.to_lowercase()) {
+            return Err(format!("paramètre dupliqué: {name}"));
+        }
+        if param.kind == MacroParamKind::Choice && param.choices.is_empty() {
+            return Err(format!("paramètre {name}: kind=choice sans 'choices'"));
+        }
+    }
+    Ok(())
 }
 
 pub async fn save(args: SaveMacroArgs) -> Result<PathBuf, String> {
@@ -61,9 +98,10 @@ pub async fn save(args: SaveMacroArgs) -> Result<PathBuf, String> {
     for (index, step) in args.steps.iter().enumerate() {
         validate_step(step).map_err(|e| format!("étape {}: {e}", index + 1))?;
     }
+    validate_params(&args.params)?;
     let context = safe_component(&args.context.to_lowercase(), "context")?;
     let name = safe_component(&args.name, "name")?;
-    let file = MacroFile { version: 1, context: context.clone(), name: name.clone(), window_id: args.window_id, steps: args.steps };
+    let file = MacroFile { version: 1, context: context.clone(), name: name.clone(), window_id: args.window_id, params: args.params, steps: args.steps };
     let dir = default_dir();
     tokio::fs::create_dir_all(&dir).await.map_err(|e| format!("création {}: {e}", dir.display()))?;
     let path = dir.join(format!("{context}__{name}.json"));
@@ -118,8 +156,11 @@ pub async fn list() -> Result<Vec<MacroSummary>, String> {
 
 async fn load(path: &Path) -> Result<MacroFile, String> {
     let bytes = tokio::fs::read(path).await.map_err(|e| format!("lecture {}: {e}", path.display()))?;
-    let file: MacroFile = serde_json::from_slice(&bytes).map_err(|e| format!("JSON macro invalide: {e}"))?;
+    // Tolère un BOM UTF-8 en tête (fichiers édités sous Windows).
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let file: MacroFile = serde_json::from_slice(bytes).map_err(|e| format!("JSON macro invalide: {e}"))?;
     if file.version != 1 { return Err(format!("version macro non supportée: {}", file.version)); }
     for (i, step) in file.steps.iter().enumerate() { validate_step(step).map_err(|e| format!("étape {}: {e}", i + 1))?; }
+    validate_params(&file.params)?;
     Ok(file)
 }

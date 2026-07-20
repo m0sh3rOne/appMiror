@@ -11,7 +11,8 @@ export type ClientMessage =
   | { type: "mouse_button"; button: MouseButtonName; pressed: boolean; x: number; y: number }
   | { type: "wheel"; delta: number; x: number; y: number }
   | { type: "key"; code: string; pressed: boolean }
-  | { type: "save_macro"; context: string; name: string; window_id: number; steps: MacroStep[] }
+  | { type: "text_input"; text: string }
+  | { type: "save_macro"; context: string; name: string; window_id: number; params?: MacroParam[]; steps: MacroStep[] }
   | { type: "list_macros" }
   | { type: "load_macro"; context: string; name: string }
   | { type: "test_macro"; steps: MacroStep[] }
@@ -20,6 +21,12 @@ export type ClientMessage =
   | { type: "load_workflow"; name: string }
   | { type: "execute_workflow"; name: string }
   | { type: "test_workflow"; graph: WorkflowGraph }
+  | { type: "save_layout"; context: string; name: string; source_width: number; source_height: number; zones: LayoutZone[] }
+  | { type: "list_layouts"; context?: string | null }
+  | { type: "load_layout"; context: string; name: string }
+  | { type: "capture_state"; context: string; name: string; layout?: string | null; zones: LayoutZone[] }
+  | { type: "list_states"; context?: string | null }
+  | { type: "delete_state"; context: string; name: string }
   | { type: "screenshot"; dir?: string | null }
   | { type: "start_recording"; dir?: string | null; fps?: number | null }
   | { type: "stop_recording" }
@@ -35,6 +42,7 @@ export interface WindowInfo {
   title: string;
   locked: boolean;
   is_virtual: boolean;
+  is_desktop: boolean;
   context: string;
 }
 
@@ -43,17 +51,63 @@ export type MacroStep =
   | { type: "mouse_button"; button: MouseButtonName; pressed: boolean; x: number; y: number }
   | { type: "wheel"; delta: number; x: number; y: number }
   | { type: "key"; code: string; pressed: boolean }
-  | { type: "text"; text: string };
+  | { type: "text"; text: string }
+  | { type: "activate_element"; element: string; layout?: string | null; strategy?: string | null; verify?: boolean | null }
+  | { type: "type_into_element"; element: string; text: string; layout?: string | null }
+  | { type: "wait_for_state"; state: string; timeout_ms?: number | null }
+  | { type: "wait_ms"; duration_ms: number }
+  | { type: "call_macro"; name: string; context?: string | null };
+
+export type MacroParamKind = "text" | "number" | "boolean" | "secret" | "choice" | "zone_ref";
+export interface MacroParam {
+  name: string;
+  kind: MacroParamKind;
+  default?: string | null;
+  description?: string | null;
+  choices?: string[];
+}
 
 export interface MacroFile {
   version: number;
   context: string;
   name: string;
   window_id: number;
+  params?: MacroParam[];
   steps: MacroStep[];
 }
 
 export interface MacroSummary { context: string; name: string; steps: number }
+
+export type LayoutZoneKind = "button" | "input" | "textarea" | "dropdown" | "menu" | "checkbox" | "radio" | "link" | "text" | "region";
+export interface NormalizedBounds { x: number; y: number; width: number; height: number }
+export type ActivationStep =
+  | { type: "click_center" }
+  | { type: "double_click" }
+  | { type: "key"; code: string }
+  | { type: "focus_then_key"; code: string }
+  | { type: "type_text" };
+export interface ZoneAnchor { relativeTo: string; dx: number; dy: number }
+export interface LayoutZone {
+  id: string;
+  name: string;
+  kind: LayoutZoneKind;
+  description?: string | null;
+  bounds: NormalizedBounds;
+  label?: string | null;
+  activation?: ActivationStep[] | null;
+  expectedState?: string | null;
+  anchor?: ZoneAnchor | null;
+}
+export interface LayoutFile {
+  version: number;
+  context: string;
+  name: string;
+  sourceWidth: number;
+  sourceHeight: number;
+  zones: LayoutZone[];
+}
+export interface LayoutSummary { context: string; name: string; zones: number }
+export interface UiStateSummary { context: string; name: string; layout?: string | null; signatures: number }
 
 export type WorkflowNodeType = "start" | "macro" | "loop" | "condition" | "wait";
 export type InjectionMode = "foreground" | "background";
@@ -61,8 +115,9 @@ export type WorkflowHandle = "next" | "on_success" | "on_error" | "loop_cycle" |
 
 export interface WorkflowPosition { x: number; y: number }
 export type AppExecutionMode = "main_desktop" | "virtual_desktop";
+export type StartTargetKind = "window" | "command" | "main_desktop" | "virtual_desktop";
 export type WorkflowNodeData =
-  | { appContext?: string | null; appTitle?: string | null; command?: string | null; executionMode?: AppExecutionMode; focus?: boolean }
+  | { targetKind?: StartTargetKind | null; appContext?: string | null; appTitle?: string | null; command?: string | null; executionMode?: AppExecutionMode; focus?: boolean }
   | { macroName: string; macroContext?: string | null; injectionMode: InjectionMode }
   | { repetitions: number }
   | { expression: string }
@@ -75,7 +130,7 @@ export interface WorkflowSummary { name: string; nodes: number; edges: number }
 
 export type ServerMessage =
   | { type: "windows"; items: WindowInfo[] }
-  | { type: "selected"; width: number; height: number }
+  | { type: "selected"; width: number; height: number; background: boolean }
   | { type: "screenshot_saved"; path: string }
   | { type: "recording_started"; dir: string; fps: number }
   | { type: "recording_stopped"; dir: string; frames: number }
@@ -91,6 +146,12 @@ export type ServerMessage =
   | { type: "workflow_node_finished"; execution_id: string; node_id: string; output: WorkflowHandle }
   | { type: "workflow_finished"; execution_id: string; name: string; nodes_executed: number }
   | { type: "workflow_failed"; execution_id: string; node_id?: string | null; message: string }
+  | { type: "layout_saved"; context: string; name: string; path: string }
+  | { type: "layout_list"; items: LayoutSummary[] }
+  | { type: "layout_loaded"; layout: LayoutFile }
+  | { type: "state_saved"; context: string; name: string; signatures: number }
+  | { type: "state_list"; items: UiStateSummary[] }
+  | { type: "state_deleted"; context: string; name: string }
   | { type: "notice"; message: string }
   | { type: "error"; message: string }
   | { type: "webrtc_offer"; sdp: string }

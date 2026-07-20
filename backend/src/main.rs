@@ -1,12 +1,15 @@
 #![windows_subsystem = "windows"]
 //! appMirror — backend de capture/streaming.
 
+mod activate;
 mod app;
 mod capture;
 mod config;
+mod detect;
 mod gui;
 mod input;
 mod logbuf;
+mod layout_store;
 mod macro_player;
 mod macro_store;
 mod workflow;
@@ -15,6 +18,7 @@ mod mcp;
 mod protocol;
 mod recorder;
 mod server;
+mod state_store;
 #[cfg(feature = "webrtc")]
 mod h264;
 #[cfg(feature = "webrtc")]

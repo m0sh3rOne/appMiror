@@ -11,6 +11,7 @@
 // (voir main.ts) et l'overlay intercepte le pointeur.
 
 import { Rulers } from "./rulers";
+import type { ActivationStep, LayoutZone, LayoutZoneKind, ZoneAnchor } from "./protocol";
 
 export type Tool =
   | "cursor" // contrôle distant (comportement historique)
@@ -66,6 +67,13 @@ export interface Slice {
   w: number;
   h: number;
   name: string; // libellé optionnel de la zone ("" = sans nom)
+  kind: LayoutZoneKind;
+  description: string;
+  /** Champs sémantiques du layout (voir LayoutZone) — préservés tels quels. */
+  label: string;
+  activation: ActivationStep[] | null;
+  expectedState: string;
+  anchor: ZoneAnchor | null;
 }
 export interface Guide {
   id: number;
@@ -179,6 +187,8 @@ export class Annotator {
   // Éditeur de nom de zone (slice) : un <input> flottant au-dessus de la slice.
   private sliceNameEditor: HTMLInputElement | null = null;
   private sliceNameEditorId: number | null = null;
+  private onZonesChanged: (() => void) | null = null;
+  private layoutVisible = false;
 
   // Groupes SVG (reconstruits par render()).
   private gShapes: SVGElement = el("g");
@@ -248,22 +258,38 @@ export class Annotator {
     this.fillOpacity = Math.max(0, Math.min(1, o));
   }
 
+  setZonesChangedHandler(handler: () => void) {
+    this.onZonesChanged = handler;
+  }
+
+  setLayoutVisible(visible: boolean) {
+    this.layoutVisible = visible;
+    this.renderSlices();
+  }
+
   /** Résolution native de la source. Un changement efface les annotations
    *  (elles étaient calées sur l'ancienne fenêtre) — récupérables via undo. */
   setNativeSize(w: number, h: number) {
     if (w <= 0 || h <= 0 || (w === this.nativeW && h === this.nativeH)) return;
-    const empty =
-      this.model.shapes.length === 0 &&
-      this.model.slices.length === 0 &&
-      this.model.guides.length === 0;
+    const previousW = this.nativeW;
+    const previousH = this.nativeH;
+    const slices = this.model.slices.map((slice) => ({
+      ...slice,
+      x: slice.x / previousW * w,
+      y: slice.y / previousH * h,
+      w: slice.w / previousW * w,
+      h: slice.h / previousH * h,
+    }));
+    const empty = this.model.shapes.length === 0 && this.model.guides.length === 0;
     if (!empty) this.pushHistory();
-    this.model = { shapes: [], slices: [], guides: [] };
+    this.model = { shapes: [], slices, guides: [] };
     this.measure = null;
     this.sel = null;
     this.nativeW = w;
     this.nativeH = h;
     this.rulers.layout(this.scale, w, h);
     this.render();
+    this.notifyZonesChanged();
   }
 
   /** À appeler quand la taille d'affichage change (échelle px CSS / px natif). */
@@ -286,6 +312,7 @@ export class Annotator {
     this.model = JSON.parse(prev) as Model;
     this.sel = null;
     this.render();
+    this.notifyZonesChanged();
   }
 
   redo() {
@@ -298,14 +325,15 @@ export class Annotator {
     this.model = JSON.parse(next) as Model;
     this.sel = null;
     this.render();
+    this.notifyZonesChanged();
   }
 
   clearAll() {
     this.commitEditor();
     const m = this.model;
-    if (m.shapes.length === 0 && m.slices.length === 0 && m.guides.length === 0) return;
+    if (m.shapes.length === 0 && m.guides.length === 0) return;
     this.pushHistory();
-    this.model = { shapes: [], slices: [], guides: [] };
+    this.model = { shapes: [], slices: m.slices, guides: [] };
     this.measure = null;
     this.sel = null;
     this.render();
@@ -317,6 +345,8 @@ export class Annotator {
     const zones = this.model.slices.map((s, i) => ({
       index: i + 1,
       name: s.name || undefined,
+      kind: s.kind,
+      description: s.description || undefined,
       x: Math.round(s.x),
       y: Math.round(s.y),
       w: Math.round(s.w),
@@ -357,12 +387,19 @@ export class Annotator {
           w: item.w,
           h: item.h,
           name: typeof item.name === "string" ? item.name : "",
+          kind: typeof item.kind === "string" ? item.kind as LayoutZoneKind : "region",
+          description: typeof item.description === "string" ? item.description : "",
+          label: typeof item.label === "string" ? item.label : "",
+          activation: Array.isArray(item.activation) ? item.activation as ActivationStep[] : null,
+          expectedState: typeof item.expectedState === "string" ? item.expectedState : "",
+          anchor: item.anchor && typeof item.anchor === "object" ? item.anchor as ZoneAnchor : null,
         });
       }
 
       this.pushHistory();
       this.model.slices = newSlices;
       this.render();
+      this.notifyZonesChanged();
       this.onStatus(`imported ${newSlices.length} slice zone(s)`);
     } catch (e: any) {
       throw new Error(`Import failed: ${e.message}`);
@@ -371,6 +408,92 @@ export class Annotator {
 
   sliceCount(): number {
     return this.model.slices.length;
+  }
+
+  /** Zones du layout courant, normalisées pour le protocole et le serveur MCP. */
+  layoutZones(): LayoutZone[] {
+    return this.model.slices.map((slice, index) => {
+      const r = norm(slice);
+      const x = Math.max(0, Math.min(1, r.x / this.nativeW));
+      const y = Math.max(0, Math.min(1, r.y / this.nativeH));
+      const width = Math.max(0, Math.min(1 - x, r.w / this.nativeW));
+      const height = Math.max(0, Math.min(1 - y, r.h / this.nativeH));
+      return {
+        id: `zone-${slice.id}`,
+        name: slice.name.trim() || `zone_${index + 1}`,
+        kind: slice.kind,
+        description: slice.description.trim() || undefined,
+        bounds: { x, y, width, height },
+        label: slice.label.trim() || undefined,
+        activation: slice.activation && slice.activation.length > 0 ? slice.activation : undefined,
+        expectedState: slice.expectedState.trim() || undefined,
+        anchor: slice.anchor ?? undefined,
+      };
+    });
+  }
+
+  /** Remplace les zones visuelles par un plan normalisé chargé du backend. */
+  setLayoutZones(zones: LayoutZone[]) {
+    this.commitEditor();
+    this.commitSliceName();
+    this.pushHistory();
+    this.model.slices = zones.map((zone) => {
+      const numeric = Number(zone.id.replace(/^zone-/, ""));
+      const id = Number.isSafeInteger(numeric) && numeric > 0 ? numeric : this.nextId++;
+      this.nextId = Math.max(this.nextId, id + 1);
+      return {
+        id,
+        x: zone.bounds.x * this.nativeW,
+        y: zone.bounds.y * this.nativeH,
+        w: zone.bounds.width * this.nativeW,
+        h: zone.bounds.height * this.nativeH,
+        name: zone.name,
+        kind: zone.kind,
+        description: zone.description ?? "",
+        label: zone.label ?? "",
+        activation: zone.activation ?? null,
+        expectedState: zone.expectedState ?? "",
+        anchor: zone.anchor ?? null,
+      };
+    });
+    this.sel = null;
+    this.render();
+    this.notifyZonesChanged();
+  }
+
+  clearLayoutZones() {
+    if (this.model.slices.length === 0) return;
+    this.pushHistory();
+    this.model.slices = [];
+    this.sel = null;
+    this.render();
+    this.notifyZonesChanged();
+  }
+
+  updateLayoutZone(id: string, patch: Partial<Pick<LayoutZone, "name" | "kind" | "description" | "label" | "activation" | "expectedState" | "anchor">>) {
+    const numeric = Number(id.replace(/^zone-/, ""));
+    const slice = this.model.slices.find((item) => item.id === numeric);
+    if (!slice) return;
+    this.pushHistory();
+    if (patch.name !== undefined) slice.name = patch.name;
+    if (patch.kind !== undefined) slice.kind = patch.kind;
+    if (patch.description !== undefined) slice.description = patch.description ?? "";
+    if (patch.label !== undefined) slice.label = patch.label ?? "";
+    if (patch.activation !== undefined) slice.activation = patch.activation ?? null;
+    if (patch.expectedState !== undefined) slice.expectedState = patch.expectedState ?? "";
+    if (patch.anchor !== undefined) slice.anchor = patch.anchor ?? null;
+    this.render();
+    this.notifyZonesChanged();
+  }
+
+  deleteLayoutZone(id: string) {
+    const numeric = Number(id.replace(/^zone-/, ""));
+    if (!this.model.slices.some((item) => item.id === numeric)) return;
+    this.pushHistory();
+    this.model.slices = this.model.slices.filter((item) => item.id !== numeric);
+    if (this.sel?.t === "slice" && this.sel.id === numeric) this.sel = null;
+    this.render();
+    this.notifyZonesChanged();
   }
 
   /** Compose la frame vidéo + les annotations dans un PNG téléchargé. */
@@ -542,7 +665,7 @@ export class Annotator {
           }
         } else {
           this.sel = null;
-          const slice: Slice = { id: this.nextId++, x: p.x, y: p.y, w: 0, h: 0, name: "" };
+          const slice: Slice = { id: this.nextId++, x: p.x, y: p.y, w: 0, h: 0, name: "", kind: "region", description: "", label: "", activation: null, expectedState: "", anchor: null };
           this.drag = { t: "new-slice", ox: p.x, oy: p.y, slice };
         }
         this.render();
@@ -666,10 +789,14 @@ export class Annotator {
         this.render();
         break;
       case "move-shape":
+        this.commitPending();
+        this.render();
+        break;
       case "move-slice":
       case "resize-slice":
         this.commitPending();
         this.render();
+        this.notifyZonesChanged();
         break;
       case "move-guide": {
         const gd = this.model.guides.find((g) => g.id === d.id);
@@ -692,6 +819,7 @@ export class Annotator {
           );
         }
         this.render();
+        if (sl.w >= 8 && sl.h >= 8) this.notifyZonesChanged();
         break;
       }
       case "measure":
@@ -796,7 +924,17 @@ export class Annotator {
 
   private onKeyDown(e: KeyboardEvent) {
     if (this.tool === "cursor") return;
-    if (e.target === this.editor) return; // le textarea gère ses propres touches
+    // Le champ texte qui possède réellement le focus garde Suppr, Backspace
+    // et les raccourcis d'édition. Les autres contrôles (dont les selects) ne
+    // neutralisent pas les raccourcis de l'overlay : une zone sélectionnée
+    // reste donc supprimable dès qu'aucun texte n'est en cours d'édition.
+    const target = e.target;
+    const textInputTypes = new Set(["text", "search", "email", "url", "tel", "password", "number"]);
+    const isEditingText =
+      target instanceof HTMLTextAreaElement ||
+      (target instanceof HTMLInputElement && textInputTypes.has(target.type)) ||
+      (target instanceof HTMLElement && target.isContentEditable);
+    if (isEditingText && document.activeElement === target) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
     if (ctrl && k === "z" && !e.shiftKey) {
@@ -820,6 +958,7 @@ export class Annotator {
       this.model.shapes = this.model.shapes.filter((s) => s.id !== this.sel!.id);
     } else {
       this.model.slices = this.model.slices.filter((s) => s.id !== this.sel!.id);
+      this.notifyZonesChanged();
     }
     this.sel = null;
     this.render();
@@ -1011,6 +1150,7 @@ export class Annotator {
       sl.name = name;
       this.render();
       this.onStatus(name ? `zone renamed “${name}”` : "zone name cleared");
+      this.notifyZonesChanged();
     }
   }
 
@@ -1065,8 +1205,9 @@ export class Annotator {
 
   private renderSlices() {
     const active = this.tool === "slice";
+    const visible = active || this.layoutVisible;
     this.gSlices.setAttribute("pointer-events", active ? "visiblePainted" : "none");
-    this.gSlices.setAttribute("opacity", active ? "1" : "0.45");
+    this.gSlices.setAttribute("opacity", visible ? (active ? "1" : "0.45") : "0");
     this.gSlices.replaceChildren(
       ...this.model.slices.map((sl, i) => this.sliceNode(sl, i, active)),
     );
@@ -1267,7 +1408,7 @@ export class Annotator {
     num.textContent = String(index + 1);
     g.appendChild(num);
     // Nom de la zone (si défini) à droite du badge.
-    if (sl.name) {
+    if (sl.name || sl.kind !== "region") {
       const nameText = el("text", {
         x: r1(r.x + bw + u(5)),
         y: r1(r.y + bh * 0.78),
@@ -1278,7 +1419,7 @@ export class Annotator {
         stroke: "rgba(0,0,0,0.7)",
         "stroke-width": u(2),
       });
-      nameText.textContent = sl.name;
+      nameText.textContent = `${sl.kind}${sl.name ? ` · ${sl.name}` : ""}`;
       g.appendChild(nameText);
     }
     // Dimensions en bas à droite.
@@ -1312,6 +1453,10 @@ export class Annotator {
       (g as SVGElement & { style: CSSStyleDeclaration }).style.cursor = "move";
     }
     return g;
+  }
+
+  private notifyZonesChanged() {
+    this.onZonesChanged?.();
   }
 
   private guideNode(gd: Guide, interactive = true): SVGElement {
