@@ -708,6 +708,17 @@ pub struct AppProfile {
     pub background_keyboard: String,
     #[serde(default)]
     pub pause_on_focus_loss: bool,
+    /// Modèle de sélection de l'interface : `pointer` (le clic active
+    /// directement), `keyboard` (une sélection interne se déplace aux flèches
+    /// et Entrée valide — cas des menus de jeu, où le survol souris et la
+    /// sélection clavier peuvent diverger), `hybrid`, ou `unknown`.
+    #[serde(default = "default_unknown")]
+    pub selection_model: String,
+    /// Touches de navigation quand `selection_model = keyboard`.
+    #[serde(default = "default_arrow_down")]
+    pub nav_next_key: String,
+    #[serde(default = "default_arrow_up")]
+    pub nav_prev_key: String,
     /// Délais par défaut de l'application, utilisés quand une étape
     /// d'activation ne fixe pas les siens (cascade étape → profil → constante).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -720,6 +731,9 @@ pub struct AppProfile {
 
 fn default_auto() -> String { "auto".to_string() }
 fn default_supported() -> String { "supported".to_string() }
+fn default_unknown() -> String { "unknown".to_string() }
+fn default_arrow_down() -> String { "ArrowDown".to_string() }
+fn default_arrow_up() -> String { "ArrowUp".to_string() }
 
 // ============================================================================
 // MCP (Model Context Protocol) — enveloppe JSON-RPC 2.0.
@@ -923,25 +937,36 @@ pub struct GetLayoutArgs {
     pub name: Option<String>,
 }
 
+// Les arguments d'outils MCP sont en snake_case (cf. window_id, timeout_ms…),
+// comme le publie le JSON Schema. Le camelCase reste accepté en alias : le
+// `rename_all = "camelCase"` précédent faisait ignorer *silencieusement* tous
+// les champs envoyés selon le schéma, si bien que set_app_profile n'écrivait
+// jamais rien.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct SetAppProfileArgs {
     pub context: String,
-    #[serde(default)]
+    #[serde(default, alias = "foregroundRequired")]
     pub foreground_required: Option<bool>,
-    #[serde(default)]
+    #[serde(default, alias = "preferredActivation")]
     pub preferred_activation: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "backgroundMouse")]
     pub background_mouse: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "backgroundKeyboard")]
     pub background_keyboard: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "pauseOnFocusLoss")]
     pub pause_on_focus_loss: Option<bool>,
-    #[serde(default)]
+    #[serde(default, alias = "selectionModel")]
+    pub selection_model: Option<String>,
+    #[serde(default, alias = "navNextKey")]
+    pub nav_next_key: Option<String>,
+    #[serde(default, alias = "navPrevKey")]
+    pub nav_prev_key: Option<String>,
+    #[serde(default, alias = "defaultPostClickDelayMs")]
     pub default_post_click_delay_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "defaultKeyHoldMs")]
     pub default_key_hold_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "defaultPostActionDelayMs")]
     pub default_post_action_delay_ms: Option<u64>,
 }
 

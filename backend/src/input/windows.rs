@@ -226,6 +226,22 @@ fn code_to_vk(code: &str) -> Option<u16> {
     Some(vk)
 }
 
+/// Touches du bloc de navigation et assimilées, qui partagent leur scancode
+/// avec le pavé numérique. Sans `KEYEVENTF_EXTENDEDKEY`, une flèche injectée
+/// par scancode est reçue comme la touche Numpad correspondante (ArrowDown →
+/// Numpad2) : l'application semble alors ignorer la touche.
+fn is_extended_key(vk: u16) -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::*;
+    matches!(
+        VIRTUAL_KEY(vk),
+        VK_UP | VK_DOWN | VK_LEFT | VK_RIGHT
+            | VK_HOME | VK_END | VK_PRIOR | VK_NEXT
+            | VK_INSERT | VK_DELETE
+            | VK_NUMLOCK | VK_DIVIDE
+            | VK_RCONTROL | VK_RMENU
+    )
+}
+
 pub fn key(hwnd: Option<isize>, code: &str, pressed: bool) {
     let _guard = hwnd.map(|h| DesktopGuard::new(as_hwnd(h)));
     let Some(vk) = code_to_vk(code) else {
@@ -235,6 +251,9 @@ pub fn key(hwnd: Option<isize>, code: &str, pressed: bool) {
     // On envoie par scancode (plus fiable pour les jeux/apps bas-niveau).
     let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u16;
     let mut flags = KEYEVENTF_SCANCODE;
+    if is_extended_key(vk) {
+        flags |= windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_EXTENDEDKEY;
+    }
     if !pressed {
         flags |= KEYEVENTF_KEYUP;
     }

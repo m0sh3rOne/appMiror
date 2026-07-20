@@ -275,7 +275,11 @@ fn tool_definitions() -> Value {
                     "element": { "type": "string", "description": "Id, nom ou label de la zone à activer." },
                     "layout": { "type": "string", "description": "Nom du layout; sinon recherche dans tous les layouts du contexte." },
                     "context": { "type": "string", "description": "Contexte applicatif; déduit de la fenêtre attachée si absent." },
-                    "strategy": { "type": "string", "enum": ["auto", "click", "click_then_enter", "double_click"], "description": "auto (défaut) enchaîne les replis; sinon force une stratégie unique." },
+                    "strategy": {
+                        "type": "string",
+                        "enum": ["auto", "click", "click_then_enter", "double_click", "keyboard_nav"],
+                        "description": "auto (défaut) enchaîne les replis. keyboard_nav pilote la sélection interne aux flèches puis valide avec Entrée — indispensable sur les interfaces où le clic ne fait que surligner (menus de jeu); auto l'essaie en premier si le profil déclare selectionModel=keyboard, sinon en dernier recours."
+                    },
                     "verify": { "type": "boolean", "description": "false désactive toute vérification (défaut true)." },
                     "verification": {
                         "type": "string",
@@ -503,7 +507,17 @@ fn tool_definitions() -> Value {
                     "preferred_activation": { "type": "string", "enum": ["auto", "click", "keyboard"] },
                     "background_mouse": { "type": "string", "enum": ["supported", "partial", "unsupported"] },
                     "background_keyboard": { "type": "string", "enum": ["supported", "partial", "unsupported"] },
-                    "pause_on_focus_loss": { "type": "boolean" }
+                    "pause_on_focus_loss": { "type": "boolean" },
+                    "selection_model": {
+                        "type": "string",
+                        "enum": ["pointer", "keyboard", "hybrid", "unknown"],
+                        "description": "keyboard = une sélection interne se déplace aux flèches et Entrée valide (menus de jeu); le survol souris peut alors diverger de la sélection. Fait passer la stratégie auto sur keyboard_nav en premier."
+                    },
+                    "nav_next_key": { "type": "string", "description": "Touche 'suivant' de la navigation clavier (défaut ArrowDown)." },
+                    "nav_prev_key": { "type": "string", "description": "Touche 'précédent' (défaut ArrowUp)." },
+                    "default_post_click_delay_ms": { "type": "integer", "description": "Pause par défaut après un clic, en ms." },
+                    "default_key_hold_ms": { "type": "integer", "description": "Maintien de touche par défaut, en ms." },
+                    "default_post_action_delay_ms": { "type": "integer", "description": "Délai avant de relever le résultat d'une action, en ms." }
                 },
                 "required": ["context"],
                 "additionalProperties": false
@@ -648,6 +662,12 @@ async fn tool_set_app_profile(args: Value) -> Result<String, String> {
     if let Some(v) = parsed.background_mouse { profile.background_mouse = v; }
     if let Some(v) = parsed.background_keyboard { profile.background_keyboard = v; }
     if let Some(v) = parsed.pause_on_focus_loss { profile.pause_on_focus_loss = v; }
+    if let Some(v) = parsed.selection_model { profile.selection_model = v; }
+    if let Some(v) = parsed.nav_next_key { profile.nav_next_key = v; }
+    if let Some(v) = parsed.nav_prev_key { profile.nav_prev_key = v; }
+    if let Some(v) = parsed.default_post_click_delay_ms { profile.default_post_click_delay_ms = Some(v); }
+    if let Some(v) = parsed.default_key_hold_ms { profile.default_key_hold_ms = Some(v); }
+    if let Some(v) = parsed.default_post_action_delay_ms { profile.default_post_action_delay_ms = Some(v); }
     let path = crate::profile_store::save(&profile).await?;
     Ok(format!("profil d'application pour '{}' sauvegardé ({})", profile.context, path.display()))
 }

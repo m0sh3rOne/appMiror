@@ -48,6 +48,8 @@ pub enum Strategy {
     Click,
     ClickThenEnter,
     DoubleClick,
+    /// Navigue à la sélection interne aux flèches puis valide (menus de jeu).
+    KeyboardNav,
 }
 
 impl Strategy {
@@ -57,6 +59,7 @@ impl Strategy {
             "click" => Ok(Self::Click),
             "click_then_enter" => Ok(Self::ClickThenEnter),
             "double_click" => Ok(Self::DoubleClick),
+            "keyboard_nav" => Ok(Self::KeyboardNav),
             other => Err(format!("stratégie inconnue: {other}")),
         }
     }
@@ -72,6 +75,8 @@ impl Strategy {
                 ActivationStep::Key { code: "Enter".into(), hold_ms: Some(120), delay_after_ms: None },
             ],
             Strategy::DoubleClick => vec![ActivationStep::DoubleClick { delay_after_ms: None }],
+            // Pilotée par `keyboard_navigate`, pas par une liste d'étapes fixe.
+            Strategy::KeyboardNav => Vec::new(),
         }
     }
 }
@@ -369,30 +374,281 @@ async fn run_step(
 /// Séquences à tenter, dans l'ordre. Une séquence explicite sur la zone prime ;
 /// sinon `Auto` déplie les replis classiques (le scénario « le clic ne fait que
 /// sélectionner, Entrée valide » est couvert par la 2e tentative).
-fn planned_attempts(zone: &LayoutZone, strategy: Strategy, preferred: Option<&str>) -> Vec<(String, Vec<ActivationStep>)> {
-    if let Some(steps) = &zone.activation {
-        return vec![("configured".into(), steps.clone())];
+fn planned_attempts(
+    zone: &LayoutZone,
+    strategy: Strategy,
+    profile: &AppProfile,
+) -> Vec<(String, Vec<ActivationStep>)> {
+    // La séquence configurée sur la zone est le défaut, mais une stratégie
+    // explicitement demandée par l'appelant doit primer — sinon impossible de
+    // tester une alternative sans éditer le layout.
+    if strategy == Strategy::Auto {
+        if let Some(steps) = &zone.activation {
+            return vec![("configured".into(), steps.clone())];
+        }
     }
+    let named = |s: Strategy, name: &str| (name.to_string(), s.sequence());
     match strategy {
         Strategy::Auto => {
-            if preferred.is_some_and(|p| p.eq_ignore_ascii_case("keyboard")) {
+            let keyboard_first = profile.selection_model.eq_ignore_ascii_case("keyboard")
+                || profile.preferred_activation.eq_ignore_ascii_case("keyboard");
+            if keyboard_first {
                 vec![
-                    ("click_then_enter".into(), Strategy::ClickThenEnter.sequence()),
-                    ("click".into(), Strategy::Click.sequence()),
-                    ("double_click".into(), Strategy::DoubleClick.sequence()),
+                    named(Strategy::KeyboardNav, "keyboard_nav"),
+                    named(Strategy::ClickThenEnter, "click_then_enter"),
+                    named(Strategy::Click, "click"),
+                    named(Strategy::DoubleClick, "double_click"),
                 ]
             } else {
                 vec![
-                    ("click".into(), Strategy::Click.sequence()),
-                    ("click_then_enter".into(), Strategy::ClickThenEnter.sequence()),
-                    ("double_click".into(), Strategy::DoubleClick.sequence()),
+                    named(Strategy::Click, "click"),
+                    named(Strategy::ClickThenEnter, "click_then_enter"),
+                    named(Strategy::DoubleClick, "double_click"),
+                    // Dernier recours: les interfaces à sélection interne ne
+                    // répondent à aucune stratégie pointeur.
+                    named(Strategy::KeyboardNav, "keyboard_nav"),
                 ]
             }
         }
-        Strategy::Click => vec![("click".into(), Strategy::Click.sequence())],
-        Strategy::ClickThenEnter => vec![("click_then_enter".into(), Strategy::ClickThenEnter.sequence())],
-        Strategy::DoubleClick => vec![("double_click".into(), Strategy::DoubleClick.sequence())],
+        Strategy::Click => vec![named(Strategy::Click, "click")],
+        Strategy::ClickThenEnter => vec![named(Strategy::ClickThenEnter, "click_then_enter")],
+        Strategy::DoubleClick => vec![named(Strategy::DoubleClick, "double_click")],
+        Strategy::KeyboardNav => vec![named(Strategy::KeyboardNav, "keyboard_nav")],
     }
+}
+
+// ---- Navigation clavier (survol ≠ sélection ≠ validation) ----
+//
+// Sur les interfaces à sélection interne (menus de jeu), le clic ne fait souvent
+// que surligner l'entrée survolée, tandis qu'Entrée valide une sélection
+// *interne* qui peut être ailleurs. Piloter au clic est alors indécidable.
+//
+// Plutôt que de deviner la couleur du surlignage (propre à chaque application),
+// on l'observe : après une flèche, exactement deux zones changent — celle que
+// la sélection quitte et celle qu'elle rejoint. Cela suffit à localiser la
+// sélection courante sans jamais connaître son apparence.
+
+/// Zones navigables d'un layout, ordonnées comme à l'écran (haut → bas).
+fn navigable_zones(file: &LayoutFile) -> Vec<&LayoutZone> {
+    let mut zones: Vec<&LayoutZone> = file
+        .zones
+        .iter()
+        .filter(|z| {
+            !matches!(
+                z.kind,
+                crate::protocol::LayoutZoneKind::Text | crate::protocol::LayoutZoneKind::Region
+            )
+        })
+        .collect();
+    zones.sort_by(|a, b| {
+        a.bounds.y.partial_cmp(&b.bounds.y).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    zones
+}
+
+/// « Coloration » du texte d'une zone, dans [0,1].
+///
+/// Les interfaces signalent presque toujours la sélection en changeant la
+/// couleur du libellé (blanc → jaune/orange). On ne mesure donc que les pixels
+/// **clairs** — le texte — et leur saturation : un libellé blanc tend vers 0,
+/// un libellé coloré vers 1. Contrairement à la luminance de la zone entière,
+/// cette mesure ignore un fond animé sombre, qui apporte peu de pixels clairs.
+///
+/// Limite assumée : ne détecte pas les interfaces qui surlignent par un cadre,
+/// une puce « > » ou un fond coloré derrière un texte inchangé.
+fn selection_tint(img: &image::DynamicImage, bounds: &crate::protocol::NormalizedBounds) -> f64 {
+    let crop = crate::detect::crop_normalized(img, bounds).to_rgb8();
+    let mut lit = 0u32;
+    let mut saturation = 0.0_f64;
+    for pixel in crop.pixels() {
+        let (r, g, b) = (f64::from(pixel[0]), f64::from(pixel[1]), f64::from(pixel[2]));
+        let max = r.max(g).max(b);
+        if max < 170.0 {
+            continue; // pixel de fond, pas de texte
+        }
+        let min = r.min(g).min(b);
+        lit += 1;
+        saturation += (max - min) / max;
+    }
+    if lit < 20 { 0.0 } else { saturation / f64::from(lit) }
+}
+
+/// Teinte de chaque zone sur une frame donnée.
+fn tints(jpeg: &[u8], zones: &[&LayoutZone]) -> Result<Vec<f64>, String> {
+    let img = image::load_from_memory(jpeg).map_err(|e| format!("décodage frame: {e}"))?;
+    Ok(zones.iter().map(|z| selection_tint(&img, &z.bounds)).collect())
+}
+
+/// Index de la zone sélectionnée : celle dont le texte est nettement plus
+/// coloré que les autres. `None` si aucune ne se détache — on préfère renoncer
+/// plutôt que de valider une entrée au hasard.
+fn locate_selection(tints: &[f64]) -> Option<usize> {
+    let mut ordered: Vec<(usize, f64)> = tints.iter().copied().enumerate().collect();
+    ordered.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let (best, best_tint) = *ordered.first()?;
+    let runner_up = ordered.get(1).map(|(_, t)| *t).unwrap_or(0.0);
+    // Seuil absolu (le texte doit être franchement coloré) ET relatif (il doit
+    // se détacher du reste), pour ne pas confondre avec un libellé teinté.
+    if best_tint >= 0.15 && best_tint >= 2.0 * runner_up.max(0.02) {
+        Some(best)
+    } else {
+        None
+    }
+}
+
+/// Attend que la sélection quitte `from`, en relisant les frames jusqu'au
+/// délai imparti.
+///
+/// Un simple `sleep` de durée fixe ne suffit pas : si la frame relevée date
+/// d'avant la prise en compte de la touche, on lit l'ancienne sélection, on
+/// croit que « rien n'a bougé », et tout le décompte se décale d'un cran — le
+/// `Enter` final tombe alors sur l'entrée voisine.
+async fn await_selection_change(
+    probe: &mut Probe,
+    zones: &[&LayoutZone],
+    from: usize,
+    timeout: Duration,
+) -> Result<Option<usize>, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut last = None;
+    while std::time::Instant::now() < deadline {
+        let seen = tints(&probe.fresh_frame(Duration::from_millis(400)).await?, zones)?;
+        let located = locate_selection(&seen);
+        if let Some(index) = located {
+            if index != from {
+                return Ok(Some(index));
+            }
+        }
+        last = located;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    // Sélection stable: soit la touche n'a pas été prise en compte, soit
+    // l'interface a buté sur une extrémité sans bouclage.
+    Ok(last)
+}
+
+/// Navigue au clavier jusqu'à `target_index` puis valide avec `Enter`.
+/// Renvoie le journal des pas pour le rapport.
+async fn keyboard_navigate(
+    probe: &mut Probe,
+    target: &AttachedWindow,
+    zones: &[&LayoutZone],
+    target_index: usize,
+    profile: &AppProfile,
+    timings: Timings,
+) -> Result<(bool, Value), String> {
+    if zones.len() < 2 {
+        return Ok((false, json!({ "error": "layout trop petit pour une navigation clavier" })));
+    }
+    let next_key = profile.nav_next_key.as_str();
+    let prev_key = profile.nav_prev_key.as_str();
+    let mut trace: Vec<Value> = Vec::new();
+
+    // Le survol souris produit son propre surlignage, indépendant de la
+    // sélection clavier : laissé sur une entrée, il ajoute une zone « allumée »
+    // en permanence et fausse la lecture différentielle. On écarte donc le
+    // curseur de la colonne de menu avant de sonder.
+    let park_x = ((zones
+        .iter()
+        .map(|z| z.bounds.x)
+        .fold(1.0_f64, f64::min)
+        * 0.5)
+        * (target.width.max(1) - 1) as f64)
+        .round()
+        .max(2.0) as i32;
+    input::mouse_move(target.id, park_x.min(target.width.max(1) - 1), 2);
+    tokio::time::sleep(Duration::from_millis(180)).await;
+    // Le focus peut avoir été volé entre-temps (l'utilisateur travaille sur la
+    // même machine) : sans focus, les flèches partent ailleurs.
+    if !input::is_foreground_window(target.id) {
+        input::focus_window(target.id);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if !input::is_foreground_window(target.id) {
+            return Ok((false, json!({ "error": "la fenêtre n'a pas le focus: navigation clavier impossible" })));
+        }
+    }
+
+    // Lecture directe de la sélection : la zone dont le texte est coloré.
+    let observed = tints(&probe.frame(Duration::from_millis(1200)).await?, zones)?;
+    let tint_view = |values: &[f64]| {
+        zones
+            .iter()
+            .zip(values)
+            .map(|(z, t)| json!({ "zone": z.name, "tint": (t * 1000.0).round() / 1000.0 }))
+            .collect::<Vec<_>>()
+    };
+    let Some(mut current) = locate_selection(&observed) else {
+        return Ok((
+            false,
+            json!({
+                "tints": tint_view(&observed),
+                "error": "aucune entrée ne se distingue par la couleur de son texte: cette interface ne signale pas sa sélection par un changement de teinte du libellé (cadre, puce ou fond coloré non gérés)"
+            }),
+        ));
+    };
+    trace.push(json!({ "step": "located", "selection": zones[current].name, "tints": tint_view(&observed) }));
+
+    // Rejoint la cible par le chemin le plus court, en vérifiant chaque pas.
+    for _ in 0..(zones.len() * 2) {
+        if current == target_index {
+            break;
+        }
+        let forward = (target_index + zones.len() - current) % zones.len();
+        let backward = (current + zones.len() - target_index) % zones.len();
+        let (key, expected) = if forward <= backward {
+            (next_key, (current + 1) % zones.len())
+        } else {
+            (prev_key, (current + zones.len() - 1) % zones.len())
+        };
+        if !input::is_foreground_window(target.id) {
+            return Ok((
+                false,
+                json!({ "trace": trace, "error": "focus perdu en cours de navigation: interruption avant de valider une entrée incertaine" }),
+            ));
+        }
+        let before_move = current;
+        press_key(target.id, key, timings.key_hold_ms.max(60)).await;
+        // Chaque pas est reconfirmé par observation du *déplacement effectif*,
+        // jamais par un délai supposé suffisant.
+        let located = await_selection_change(probe, zones, before_move, Duration::from_millis(1500)).await?;
+        trace.push(json!({
+            "step": "move",
+            "key": key,
+            "expected": zones[expected].name,
+            "observed": located.map(|i| zones[i].name.clone()),
+        }));
+        let Some(located) = located.filter(|index| *index != before_move) else {
+            return Ok((
+                false,
+                json!({
+                    "trace": trace,
+                    "error": format!(
+                        "la sélection n'a pas quitté '{}' après {key}: touche non prise en compte par l'application",
+                        zones[before_move].name
+                    )
+                }),
+            ));
+        };
+        // On suit ce qui est *observé*, pas ce qui était prévu : certaines
+        // interfaces sautent les entrées désactivées ou bouclent autrement.
+        current = located;
+        if located != expected {
+            trace.push(json!({ "step": "adjust", "note": "la sélection n'a pas suivi l'ordre attendu; recalcul depuis la position observée" }));
+        }
+    }
+
+    if current != target_index {
+        return Ok((false, json!({ "trace": trace, "error": "cible non atteinte" })));
+    }
+    // Dernière vérification avant de valider : une frappe Entrée envoyée sans
+    // focus, ou sur une sélection déplacée entre-temps, est irrattrapable.
+    if !input::is_foreground_window(target.id) {
+        return Ok((false, json!({ "trace": trace, "error": "focus perdu avant validation" })));
+    }
+    press_key(target.id, "Enter", timings.key_hold_ms.max(120)).await;
+    trace.push(json!({ "step": "validate", "key": "Enter", "on": zones[target_index].name }));
+    tokio::time::sleep(Duration::from_millis(timings.post_action_ms.min(30_000))).await;
+    Ok((true, json!({ "trace": trace })))
 }
 
 /// Attend que l'état attendu soit détecté sur les frames de la sonde.
@@ -566,13 +822,35 @@ pub async fn activate_element(
         _ => json!({ "state": null, "match": null, "warning": "aucun état enregistré pour ce contexte" }),
     };
 
-    let attempts = planned_attempts(zone, strategy, Some(&profile.preferred_activation));
+    let attempts = planned_attempts(zone, strategy, &profile);
     let mut reports: Vec<Value> = Vec::new();
     let mut verified = false;
+    // Ordre visuel des zones navigables, pour la stratégie clavier.
+    let nav_zones = navigable_zones(file);
+    let nav_target = nav_zones.iter().position(|z| z.id == zone.id);
 
     for (name, steps) in &attempts {
-        for step in steps {
-            run_step(&target, step, px, py, text, timings, states).await?;
+        let mut nav_report = Value::Null;
+        if name == "keyboard_nav" {
+            let Some(target_index) = nav_target else {
+                reports.push(json!({ "strategy": name, "skipped": "zone non navigable (kind text/region)" }));
+                continue;
+            };
+            let Some(probe_ref) = &mut probe else {
+                reports.push(json!({ "strategy": name, "skipped": "navigation clavier impossible sans vérification" }));
+                continue;
+            };
+            let (reached, report) =
+                keyboard_navigate(probe_ref, &target, &nav_zones, target_index, &profile, timings).await?;
+            nav_report = report;
+            if !reached {
+                reports.push(json!({ "strategy": name, "navigation": nav_report }));
+                continue;
+            }
+        } else {
+            for step in steps {
+                run_step(&target, step, px, py, text, timings, states).await?;
+            }
         }
         let Some(probe_ref) = &mut probe else {
             reports.push(json!({ "strategy": name, "steps": steps.iter().map(step_label).collect::<Vec<_>>() }));
@@ -586,6 +864,7 @@ pub async fn activate_element(
         reports.push(json!({
             "strategy": name,
             "steps": steps.iter().map(step_label).collect::<Vec<_>>(),
+            "navigation": nav_report,
             "screenChanged": changed,
             "hammingDistance": diff.hamming,
             "meanLumaDiff": (diff.mean * 100.0).round() / 100.0,
