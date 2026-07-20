@@ -4,6 +4,8 @@
 //! dans le **repère natif de la fenêtre** (pixels client), la translation étant
 //! faite côté frontend à partir des dimensions renvoyées par `Selected`.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Client -> Serveur.
@@ -50,6 +52,11 @@ pub enum ClientMessage {
     ListMacros,
     LoadMacro { context: String, name: String },
     TestMacro { steps: Vec<MacroStep> },
+    SaveWorkflow { name: String, graph: WorkflowGraph },
+    ListWorkflows,
+    LoadWorkflow { name: String },
+    ExecuteWorkflow { name: String },
+    TestWorkflow { graph: WorkflowGraph },
     /// Sauvegarde la frame courante en JPEG dans `dir` (défaut si absent/vide).
     Screenshot { dir: Option<String> },
     /// Démarre l'enregistrement d'une séquence d'images dans un sous-dossier
@@ -101,6 +108,14 @@ pub enum ServerMessage {
     MacroList { items: Vec<MacroSummary> },
     MacroLoaded { macro_file: MacroFile },
     MacroPlayed { name: String, steps: usize },
+    WorkflowSaved { name: String, path: String },
+    WorkflowList { items: Vec<WorkflowSummary> },
+    WorkflowLoaded { workflow: WorkflowFile },
+    WorkflowStarted { execution_id: String, name: String },
+    WorkflowNodeStarted { execution_id: String, node_id: String },
+    WorkflowNodeFinished { execution_id: String, node_id: String, output: WorkflowHandle },
+    WorkflowFinished { execution_id: String, name: String, nodes_executed: usize },
+    WorkflowFailed { execution_id: String, node_id: Option<String>, message: String },
     /// Évènement informatif poussé au superviseur (ex. un agent MCP a pris la
     /// main sur une fenêtre).
     Notice { message: String },
@@ -152,6 +167,114 @@ pub struct MacroSummary {
     pub name: String,
     pub steps: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowGraph {
+    pub nodes: HashMap<String, WorkflowNode>,
+    pub edges: Vec<WorkflowEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowFile {
+    pub version: u32,
+    pub name: String,
+    pub graph: WorkflowGraph,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowNode {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub node_type: WorkflowNodeType,
+    pub position: WorkflowPosition,
+    pub data: WorkflowNodeData,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowNodeType { Start, Macro, Loop, Condition, Wait }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct WorkflowPosition { pub x: f64, pub y: f64 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WorkflowNodeData {
+    Start(StartNodeData),
+    Macro(MacroNodeData),
+    Loop(LoopNodeData),
+    Condition(ConditionNodeData),
+    Wait(WaitNodeData),
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartNodeData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_context: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub execution_mode: AppExecutionMode,
+    #[serde(default)]
+    pub focus: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppExecutionMode { #[default] MainDesktop, VirtualDesktop }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MacroNodeData {
+    pub macro_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macro_context: Option<String>,
+    pub injection_mode: InjectionMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InjectionMode { Foreground, Background }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LoopNodeData { pub repetitions: u32 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConditionNodeData { pub expression: String }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WaitNodeData { pub duration_ms: u64 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowEdge {
+    pub id: String,
+    pub source_node_id: String,
+    pub source_handle: WorkflowHandle,
+    pub target_node_id: String,
+    pub target_handle: WorkflowInputHandle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowHandle { Next, OnSuccess, OnError, LoopCycle, Out, True, False, WaitDone }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowInputHandle { In }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowSummary { pub name: String, pub nodes: usize, pub edges: usize }
 
 // ============================================================================
 // MCP (Model Context Protocol) — enveloppe JSON-RPC 2.0.
@@ -302,3 +425,9 @@ pub struct SaveMacroArgs {
 pub struct PlayMacroArgs {
     pub name: String,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct SaveWorkflowArgs { pub name: String, pub graph: WorkflowGraph }
+
+#[derive(Debug, Deserialize)]
+pub struct ExecuteWorkflowArgs { pub name: String }

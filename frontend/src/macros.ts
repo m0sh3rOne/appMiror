@@ -17,17 +17,31 @@ export class MacroController {
     private readonly send: Sender,
     private readonly onLayout: () => void,
     private readonly onStatus: (message: string) => void,
+    private readonly onRecordingChange: (recording: boolean) => void = () => {},
   ) {
     this.bind();
     this.render();
   }
 
   setTarget(windowId: number, context: string, width: number, height: number) {
+    this.selectTarget(windowId, context);
+    this.setNativeSize(width, height);
+  }
+
+  /**
+   * Mémorise immédiatement la fenêtre choisie, sans attendre que le backend
+   * ait fini de redémarrer la capture et renvoie le message `selected`.
+   */
+  selectTarget(windowId: number, context: string) {
     this.windowId = windowId;
     this.context = context || "unknown";
+    this.panel.querySelector<HTMLElement>("#macroContext")!.textContent = this.context;
+  }
+
+  /** La taille native peut aussi être rafraîchie par les frames vidéo. */
+  setNativeSize(width: number, height: number) {
     this.nativeW = width;
     this.nativeH = height;
-    this.panel.querySelector<HTMLElement>("#macroContext")!.textContent = this.context;
   }
 
   togglePanel() {
@@ -37,10 +51,9 @@ export class MacroController {
   }
 
   close() {
-    this.recording = false;
+    this.setRecording(false);
     this.panel.hidden = true;
     document.getElementById("toggleMacros")?.classList.remove("active");
-    this.syncRecordButton();
     this.onLayout();
   }
 
@@ -77,17 +90,25 @@ export class MacroController {
   private bind() {
     this.panel.querySelector<HTMLButtonElement>("#macroClose")!.onclick = () => this.close();
     this.panel.querySelector<HTMLButtonElement>("#macroRecord")!.onclick = () => {
-      if (!this.windowId) { this.onStatus("Sélectionnez une fenêtre avant d’enregistrer une macro"); return; }
-      this.recording = !this.recording;
-      this.syncRecordButton();
+      if (this.windowId === null) {
+        this.onStatus("Sélectionnez une fenêtre puis cliquez sur Stream avant d’enregistrer une macro");
+        return;
+      }
+      if (!this.recording && (this.nativeW <= 0 || this.nativeH <= 0)) {
+        this.onStatus("Le flux de la fenêtre n’est pas encore prêt");
+        return;
+      }
+      this.setRecording(!this.recording);
+      this.onStatus(this.recording
+        ? `Enregistrement de la macro en cours — ${this.context}`
+        : `Enregistrement arrêté — ${this.steps.length} étape(s)`);
     };
     this.panel.querySelector<HTMLButtonElement>("#macroSave")!.onclick = () => this.save();
     this.panel.querySelector<HTMLButtonElement>("#macroLoad")!.onclick = () => this.send({ type: "list_macros" });
     this.panel.querySelector<HTMLButtonElement>("#macroTest")!.onclick = () => {
       if (!this.windowId) return this.onStatus("Sélectionnez une fenêtre avant de tester");
       if (!this.steps.length) return this.onStatus("La macro ne contient aucune étape");
-      this.recording = false;
-      this.syncRecordButton();
+      this.setRecording(false);
       this.send({ type: "test_macro", steps: this.steps });
       this.onStatus("Test de la macro en cours…");
     };
@@ -118,8 +139,7 @@ export class MacroController {
   }
 
   load(file: MacroFile) {
-    this.recording = false;
-    this.syncRecordButton();
+    this.setRecording(false);
     this.steps = file.steps;
     this.context = file.context;
     this.panel.querySelector<HTMLElement>("#macroContext")!.textContent = file.context;
@@ -134,13 +154,22 @@ export class MacroController {
     button.textContent = this.recording ? "⏹ Arrêter l’enregistrement" : "⏺ Enregistrer une nouvelle action";
   }
 
+  private setRecording(recording: boolean) {
+    if (this.recording === recording) {
+      this.syncRecordButton();
+      return;
+    }
+    this.recording = recording;
+    this.syncRecordButton();
+    this.onRecordingChange(recording);
+  }
+
   private save() {
     const name = this.panel.querySelector<HTMLInputElement>("#macroName")!.value.trim();
     if (!this.windowId) return this.onStatus("Aucune fenêtre active");
     if (!name) return this.onStatus("Saisissez un nom de macro");
     if (!this.steps.length) return this.onStatus("La macro ne contient aucune étape");
-    this.recording = false;
-    this.syncRecordButton();
+    this.setRecording(false);
     this.send({ type: "save_macro", context: this.context, name, window_id: this.windowId, steps: this.steps });
   }
 

@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use crate::app::{AppState, AttachedWindow};
 use crate::protocol::{
     AttachArgs, InjectAction, InjectArgs, McpError, McpMethod, McpRequest, McpResponse, MouseButton,
-    PlayMacroArgs, SaveMacroArgs,
+    ExecuteWorkflowArgs, PlayMacroArgs, SaveMacroArgs, SaveWorkflowArgs,
 };
 use crate::{capture, input, recorder};
 
@@ -162,6 +162,42 @@ fn tool_definitions() -> Value {
                 "additionalProperties": false
             }
         }
+        ,{
+            "name": "save_workflow",
+            "description": "Valide et sauvegarde un graphe de workflow visuel.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "graph": {
+                        "type": "object",
+                        "properties": {
+                            "nodes": { "type": "object" },
+                            "edges": { "type": "array", "items": { "type": "object" } }
+                        },
+                        "required": ["nodes", "edges"],
+                        "additionalProperties": false
+                    }
+                },
+                "required": ["name", "graph"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "list_workflows",
+            "description": "Liste les graphes de workflow sauvegardés.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
+            "name": "execute_workflow",
+            "description": "Exécute un workflow sauvegardé sur la fenêtre MCP attachée.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"],
+                "additionalProperties": false
+            }
+        }
     ])
 }
 
@@ -182,6 +218,9 @@ async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> 
         "inspect_ui_elements" => tool_inspect(state).map(|v| json!([ { "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() } ])),
         "save_macro" => tool_save_macro(args).await.map(|t| json!([ { "type": "text", "text": t } ])),
         "play_macro" => tool_play_macro(args, state).await.map(|t| json!([ { "type": "text", "text": t } ])),
+        "save_workflow" => tool_save_workflow(args).await.map(|t| json!([ { "type": "text", "text": t } ])),
+        "list_workflows" => tool_list_workflows().await.map(|t| json!([ { "type": "text", "text": t } ])),
+        "execute_workflow" => tool_execute_workflow(args, state).await.map(|t| json!([ { "type": "text", "text": t } ])),
         other => return Err(McpError { code: -32602, message: format!("outil inconnu: {other}") }),
     };
 
@@ -195,6 +234,26 @@ async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> 
             "isError": true
         }),
     })
+}
+
+async fn tool_save_workflow(args: Value) -> Result<String, String> {
+    let parsed: SaveWorkflowArgs = serde_json::from_value(args).map_err(|e| format!("arguments invalides: {e}"))?;
+    let path = crate::workflow_store::save(&parsed.name, parsed.graph).await?;
+    Ok(format!("workflow sauvegardé: {}", path.display()))
+}
+
+async fn tool_list_workflows() -> Result<String, String> {
+    let items = crate::workflow_store::list().await?;
+    serde_json::to_string_pretty(&items).map_err(|e| format!("sérialisation: {e}"))
+}
+
+async fn tool_execute_workflow(args: Value, state: &AppState) -> Result<String, String> {
+    let parsed: ExecuteWorkflowArgs = serde_json::from_value(args).map_err(|e| format!("arguments invalides: {e}"))?;
+    let target = *state.attached.lock().unwrap();
+    let file = crate::workflow_store::load(&parsed.name).await?;
+    let count = crate::workflow::run(file, target, None).await?;
+    let _ = state.notices.send(format!("MCP executed workflow '{}' ({count} nodes)", parsed.name));
+    Ok(format!("workflow '{}' exécuté: {count} nœuds", parsed.name))
 }
 
 async fn tool_save_macro(args: Value) -> Result<String, String> {
@@ -363,7 +422,7 @@ fn tool_inject(args: Value, state: &AppState) -> Result<String, String> {
 
 /// Saisie best-effort d'une chaîne : décompose chaque caractère en appui/relâche
 /// via la façade `input::key` (gère la touche Shift multiplateforme).
-fn type_text(hwnd: Option<isize>, text: &str) -> usize {
+pub(crate) fn type_text(hwnd: Option<isize>, text: &str) -> usize {
     let mut count = 0;
     for ch in text.chars() {
         let Some((code, shift)) = char_to_code(ch) else {

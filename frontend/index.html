@@ -77,6 +77,7 @@
       /* Bouton toggle actif (toolbar visible). */
       #toggleToolbar.active { background: #2f6fb3; border-color: #4a8fd6; color: #fff; }
       #toggleMacros.active { background: #2f6fb3; border-color: #4a8fd6; color: #fff; }
+      #toggleWorkflow.active { background: #7556c9; border-color: #9678e8; color: #fff; }
       button {
         display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem;
         min-height: 2rem; padding: 0.35rem 0.7rem;
@@ -175,6 +176,55 @@
       #macroName { width:100%; box-sizing:border-box; }
       #macroSave { padding:.7rem; background:#269b4c; border-color:#35b85f; color:#fff; }
       @media (max-width: 850px) { #macroPanel { position:fixed; z-index:20; right:0; top:0; bottom:0; max-width:100vw; width:min(410px,100vw); } }
+
+      /* ── Éditeur visuel de workflows ───────────────────────────────── */
+      #workflowEditor { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; background:#101217; }
+      #workflowEditor[hidden] { display:none; }
+      .wf-topbar { display:flex; align-items:center; gap:.45rem; padding:.5rem .65rem; background:#1b1f27; border-bottom:1px solid #343a46; }
+      .wf-topbar input { width:190px; }
+      .wf-topbar select { max-width:220px; }
+      .wf-spacer { flex:1; }
+      #workflowRun { background:#269b4c; border-color:#35b85f; color:#fff; }
+      .wf-layout { flex:1; min-height:0; display:flex; }
+      #workflowViewport { position:relative; flex:1; min-width:0; overflow:hidden; touch-action:none; cursor:grab; background-color:#11141a; background-image:radial-gradient(#343b48 1px,transparent 1px); background-size:24px 24px; }
+      #workflowViewport:active { cursor:grabbing; }
+      #workflowWorld { position:absolute; left:0; top:0; width:4000px; height:3000px; transform-origin:0 0; }
+      #workflowEdges { position:absolute; inset:0; width:4000px; height:3000px; overflow:visible; pointer-events:none; }
+      .wf-edge { fill:none; stroke:#8792a8; stroke-width:3; stroke-linejoin:round; stroke-linecap:round; pointer-events:stroke; cursor:pointer; }
+      .wf-edge:hover { stroke-width:5; filter:brightness(1.45); }
+      .wf-edge-start { stroke:#2f9a68; } .wf-arrow-start { fill:#2f9a68; }
+      .wf-edge-macro { stroke:#4a82c8; } .wf-arrow-macro { fill:#4a82c8; }
+      .wf-edge-loop { stroke:#b27b30; } .wf-arrow-loop { fill:#b27b30; }
+      .wf-edge-condition { stroke:#a75dba; } .wf-arrow-condition { fill:#a75dba; }
+      .wf-edge-wait { stroke:#78869d; } .wf-arrow-wait { fill:#78869d; }
+      #workflowNodes { position:absolute; inset:0; }
+      .wf-node { position:absolute; width:230px; min-height:130px; border:2px solid #4a5262; border-radius:10px; background:#20242d; box-shadow:0 8px 22px rgba(0,0,0,.4); cursor:default; }
+      .wf-node.selected { border-color:#8e72e8; box-shadow:0 0 0 2px rgba(142,114,232,.25),0 8px 22px rgba(0,0,0,.4); }
+      .wf-node.dragging { opacity:.92; box-shadow:0 14px 34px rgba(0,0,0,.62); }
+      .wf-node.running { border-color:#4ee67a; box-shadow:0 0 18px rgba(78,230,122,.8); }
+      .wf-node-head { display:flex; align-items:center; justify-content:space-between; padding:.55rem .65rem; border-radius:8px 8px 0 0; background:#303641; cursor:move; user-select:none; }
+      .wf-node-head button { min-height:1.35rem; padding:.05rem .35rem; }
+      .wf-start .wf-node-head { background:#246b4c; } .wf-macro .wf-node-head { background:#315f9c; } .wf-loop .wf-node-head { background:#765423; } .wf-condition .wf-node-head { background:#743f83; } .wf-wait .wf-node-head { background:#4e596c; }
+      .wf-node-body { position:relative; padding:.55rem .7rem; display:flex; flex-direction:column; gap:.45rem; }
+      .wf-node-body p { margin:.25rem 0; opacity:.65; font-size:.78rem; }
+      .wf-field { display:flex; flex-direction:column; gap:.25rem; font-size:.68rem; text-transform:uppercase; opacity:.9; }
+      .wf-field input,.wf-field select { width:100%; box-sizing:border-box; min-width:0; padding:.32rem; font-size:.74rem; }
+      .wf-check { display:flex; align-items:center; gap:.4rem; font-size:.72rem; text-transform:none; }
+      .wf-check input { width:auto; }
+      .wf-outputs { display:flex; flex-direction:column; align-items:flex-end; gap:.2rem; padding:.2rem .45rem .55rem; }
+      .wf-handle { min-height:1.35rem; padding:.1rem .3rem; border:0; background:transparent; font-size:.7rem; }
+      .wf-handle.input { position:absolute; left:-17px; top:8px; color:#9eabc2; }
+      .wf-handle.output { color:#c5cede; }
+      .wf-handle:hover,.wf-handle.pending { color:#68a7ff; background:rgba(74,143,214,.15); }
+      .wf-palette { flex:0 0 230px; display:flex; flex-direction:column; gap:.55rem; padding:.7rem; background:#191d24; border-left:1px solid #343a46; }
+      .wf-palette h3 { margin:.1rem 0; font-size:.86rem; text-transform:uppercase; }
+      .wf-palette input { width:100%; box-sizing:border-box; }
+      .wf-palette button { justify-content:flex-start; }
+      .wf-palette small { opacity:.55; line-height:1.4; }
+      #workflowMinimap { position:absolute; right:245px; bottom:18px; width:180px; height:115px; background:rgba(18,21,27,.9); border:1px solid #596170; border-radius:6px; pointer-events:none; }
+      #workflowMinimap rect { stroke:#d3d8e2; stroke-width:1; fill:#4e596c; } #workflowMinimap .mini-start{fill:#246b4c} #workflowMinimap .mini-macro{fill:#315f9c} #workflowMinimap .mini-loop{fill:#765423} #workflowMinimap .mini-condition{fill:#743f83}
+      #workflowMinimap .mini-viewport { fill:rgba(74,143,214,.12); stroke:#65a8ef; stroke-width:2; }
+      .wf-zoom { position:absolute; left:14px; bottom:14px; display:flex; gap:.4rem; align-items:center; padding:.35rem .55rem; background:rgba(20,23,29,.88); border:1px solid #3d4451; border-radius:6px; font-size:.75rem; }
       /* #stage est dimensionné en px par main.ts (ajustement letterbox) ;
          canvas et SVG le remplissent exactement, donc l'overlay est toujours
          aligné pixel à pixel sur la vidéo. */
@@ -304,6 +354,7 @@
         <button id="shot" title="Save the current frame as JPEG">📷 Capture</button>
         <button id="rec" title="Record a sequence of images (JPEG)">⏺ REC</button>
         <button id="toggleMacros" title="Show / hide macro workflows">⚙⚙ Macro</button>
+        <button id="toggleWorkflow" title="Open visual workflow editor">⌘ Workflow</button>
       </div>
 
       <span id="status">disconnected</span>
@@ -337,6 +388,39 @@
     </div>
 
     <div id="workspace">
+    <section id="workflowEditor" hidden aria-label="Visual workflow editor">
+      <div class="wf-topbar">
+        <button id="workflowNew">＋ New</button>
+        <input id="workflowName" type="text" value="workflow_1" placeholder="Workflow name" />
+        <button id="workflowSave">💾 Save</button>
+        <button id="workflowLoad">📂 Load</button>
+        <select id="workflowLibrary"><option value="">— workflows —</option></select>
+        <button id="workflowRun">▶ Test workflow</button>
+        <span class="wf-spacer"></span>
+        <button id="workflowFit">⊙ Fit</button>
+        <button id="workflowClose">Close [X]</button>
+      </div>
+      <div class="wf-layout">
+        <div id="workflowViewport">
+          <div id="workflowWorld">
+            <svg id="workflowEdges" xmlns="http://www.w3.org/2000/svg"></svg>
+            <div id="workflowNodes"></div>
+          </div>
+          <svg id="workflowMinimap" viewBox="0 0 180 115"></svg>
+          <div class="wf-zoom"><span id="workflowZoom">100%</span><span>Wheel: zoom · Drag background: pan · Click edge: delete</span></div>
+        </div>
+        <aside class="wf-palette">
+          <h3>Node palette</h3>
+          <input id="workflowSearch" type="text" placeholder="Search nodes…" />
+          <button data-add-node="start">▶ START</button>
+          <button data-add-node="macro">⌨ MACRO</button>
+          <button data-add-node="loop">↻ LOOP</button>
+          <button data-add-node="condition">◇ IF CONDITION</button>
+          <button data-add-node="wait">◷ WAIT</button>
+          <small>Ajoutez un nœud, puis cliquez sur une sortie et sur l’entrée du nœud cible pour créer une connexion.</small>
+        </aside>
+      </div>
+    </section>
     <main>
       <div id="stage" data-tool="cursor">
         <canvas id="screen" width="1280" height="720" tabindex="0"></canvas>

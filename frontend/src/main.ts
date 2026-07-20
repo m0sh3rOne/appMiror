@@ -6,6 +6,7 @@ import { StreamClient } from "./stream";
 import { Annotator, type Tool } from "./annotate";
 import { Rulers, RULER_THICKNESS } from "./rulers";
 import { MacroController } from "./macros";
+import { WorkflowEditor } from "./workflows";
 import type { ServerMessage } from "./protocol";
 
 const canvas = document.getElementById("screen") as HTMLCanvasElement;
@@ -147,6 +148,9 @@ function sendSelect(id: number, pin: string | null) {
   const { quality, scale } = getQualitySettings();
   lastSelectedId = id;
   lastPin = pin;
+  // Le panneau Macro peut démarrer dès la sélection utilisateur ; il ne
+  // dépend plus du délai de redémarrage de la capture côté serveur.
+  macros.selectTarget(id, windowContexts.get(id) ?? "unknown");
   stream.send({
     type: "select_window",
     id,
@@ -294,6 +298,7 @@ const stream = new StreamClient(canvas, {
   // DPI, downscale qualité) et déformerait alors le trait.
   onFrameSize: (w, h) => {
     annot.setNativeSize(w, h);
+    macros.setNativeSize(w, h);
     layout();
   },
   onServerMessage: (msg: ServerMessage) => {
@@ -301,6 +306,7 @@ const stream = new StreamClient(canvas, {
       case "windows": {
         select.length = 1; // garde le placeholder
         windowContexts.clear();
+        workflow.setWindows(msg.items);
         
         const mainContainer = document.getElementById("mainWindowsContainer") as HTMLDivElement;
         const virtualContainer = document.getElementById("virtualWindowsContainer") as HTMLDivElement;
@@ -453,6 +459,7 @@ const stream = new StreamClient(canvas, {
         break;
       case "macro_list":
         macros.showLibrary(msg.items);
+        workflow.setMacros(msg.items);
         statusEl.textContent = `${msg.items.length} macro(s) disponible(s)`;
         break;
       case "macro_loaded":
@@ -460,6 +467,31 @@ const stream = new StreamClient(canvas, {
         break;
       case "macro_played":
         statusEl.textContent = `test terminé : ${msg.steps} étapes exécutées`;
+        break;
+      case "workflow_saved":
+        statusEl.textContent = `workflow ${msg.name} sauvegardé → ${msg.path}`;
+        stream.send({ type: "list_workflows" });
+        break;
+      case "workflow_list":
+        workflow.showLibrary(msg.items);
+        break;
+      case "workflow_loaded":
+        workflow.load(msg.workflow);
+        break;
+      case "workflow_started":
+        statusEl.textContent = `workflow ${msg.name} démarré`;
+        break;
+      case "workflow_node_started":
+        workflow.nodeStarted(msg.node_id);
+        statusEl.textContent = `workflow : ${msg.node_id}`;
+        break;
+      case "workflow_node_finished":
+        break;
+      case "workflow_finished":
+        workflow.executionFinished(`workflow ${msg.name} terminé : ${msg.nodes_executed} nœuds`);
+        break;
+      case "workflow_failed":
+        workflow.executionFinished(`workflow échoué${msg.node_id ? ` sur ${msg.node_id}` : ""} : ${msg.message}`);
         break;
       case "notice":
         statusEl.textContent = `⚙️ ${msg.message}`;
@@ -490,9 +522,34 @@ const macros = new MacroController(
   (message) => stream.send(message),
   layout,
   (message) => (statusEl.textContent = message),
+  (isRecording) => {
+    if (!isRecording) return;
+    // Une macro enregistre des interactions distantes : repasse toujours en
+    // mode contrôle, même si un outil d’annotation était encore sélectionné.
+    setTool("cursor");
+    input.setEnabled(true);
+    canvas.focus();
+  },
+);
+const workflow = new WorkflowEditor(
+  document.getElementById("workflowEditor") as HTMLElement,
+  (message) => stream.send(message),
+  (open) => {
+    const main = document.querySelector("#workspace > main") as HTMLElement;
+    main.hidden = open;
+    if (open) {
+      macros.close();
+      toolbarEl.hidden = true;
+    } else {
+      applyToolbarVisible();
+      layout();
+    }
+  },
+  (message) => (statusEl.textContent = message),
 );
 input.setObserver((message, text) => macros.observe(message, text));
 (document.getElementById("toggleMacros") as HTMLButtonElement).addEventListener("click", () => macros.togglePanel());
+(document.getElementById("toggleWorkflow") as HTMLButtonElement).addEventListener("click", () => workflow.toggle());
 
 input.attach();
 stream.connect();

@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use crate::app::AppState;
 use crate::capture::{self, CaptureSession};
 use crate::input;
-use crate::protocol::{ClientMessage, SaveMacroArgs, ServerMessage};
+use crate::protocol::{ClientMessage, SaveMacroArgs, ServerMessage, WorkflowFile};
 use crate::recorder;
 
 type Sender = Arc<Mutex<SplitSink<WebSocket, Message>>>;
@@ -103,6 +103,32 @@ async fn send_json(sender: &Sender, msg: &ServerMessage) {
     if let Ok(txt) = serde_json::to_string(msg) {
         let _ = sender.lock().await.send(Message::Text(txt)).await;
     }
+}
+
+fn workflow_event_message(event: crate::workflow::WorkflowEvent) -> ServerMessage {
+    use crate::workflow::WorkflowEvent;
+    match event {
+        WorkflowEvent::Started { execution_id, name } => ServerMessage::WorkflowStarted { execution_id, name },
+        WorkflowEvent::NodeStarted { execution_id, node_id } => ServerMessage::WorkflowNodeStarted { execution_id, node_id },
+        WorkflowEvent::NodeFinished { execution_id, node_id, output } => ServerMessage::WorkflowNodeFinished { execution_id, node_id, output },
+        WorkflowEvent::Finished { execution_id, name, nodes_executed } => ServerMessage::WorkflowFinished { execution_id, name, nodes_executed },
+        WorkflowEvent::Failed { execution_id, node_id, message } => ServerMessage::WorkflowFailed { execution_id, node_id, message },
+    }
+}
+
+fn spawn_workflow(file: WorkflowFile, hwnd: Option<isize>, sender: Sender) {
+    let target = hwnd.map(|id| {
+        let (width, height) = input::client_size(id).unwrap_or((0, 0));
+        crate::app::AttachedWindow { id, width, height }
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let forward = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await { send_json(&sender, &workflow_event_message(event)).await; }
+        });
+        let _ = crate::workflow::run(file, target, Some(tx)).await;
+        let _ = forward.await;
+    });
 }
 
 async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Sender, state: &AppState) {
@@ -275,6 +301,28 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
                 Ok(steps) => send_json(sender, &ServerMessage::MacroPlayed { name: "test".into(), steps }).await,
                 Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
             }
+        }
+        ClientMessage::SaveWorkflow { name, graph } => match crate::workflow_store::save(&name, graph).await {
+            Ok(path) => send_json(sender, &ServerMessage::WorkflowSaved { name, path: path.display().to_string() }).await,
+            Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+        },
+        ClientMessage::ListWorkflows => match crate::workflow_store::list().await {
+            Ok(items) => send_json(sender, &ServerMessage::WorkflowList { items }).await,
+            Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+        },
+        ClientMessage::LoadWorkflow { name } => match crate::workflow_store::load(&name).await {
+            Ok(workflow) => send_json(sender, &ServerMessage::WorkflowLoaded { workflow }).await,
+            Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+        },
+        ClientMessage::ExecuteWorkflow { name } => {
+            match crate::workflow_store::load(&name).await {
+                Ok(file) => spawn_workflow(file, session.hwnd, sender.clone()),
+                Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+            }
+        }
+        ClientMessage::TestWorkflow { graph } => {
+            if let Err(message) = crate::workflow_store::validate(&graph) { send_json(sender, &ServerMessage::Error { message }).await; return; }
+            spawn_workflow(WorkflowFile { version: 1, name: "test".into(), graph }, session.hwnd, sender.clone());
         }
 
         ClientMessage::Screenshot { dir } => {

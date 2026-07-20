@@ -15,6 +15,11 @@ export type ClientMessage =
   | { type: "list_macros" }
   | { type: "load_macro"; context: string; name: string }
   | { type: "test_macro"; steps: MacroStep[] }
+  | { type: "save_workflow"; name: string; graph: WorkflowGraph }
+  | { type: "list_workflows" }
+  | { type: "load_workflow"; name: string }
+  | { type: "execute_workflow"; name: string }
+  | { type: "test_workflow"; graph: WorkflowGraph }
   | { type: "screenshot"; dir?: string | null }
   | { type: "start_recording"; dir?: string | null; fps?: number | null }
   | { type: "stop_recording" }
@@ -50,6 +55,24 @@ export interface MacroFile {
 
 export interface MacroSummary { context: string; name: string; steps: number }
 
+export type WorkflowNodeType = "start" | "macro" | "loop" | "condition" | "wait";
+export type InjectionMode = "foreground" | "background";
+export type WorkflowHandle = "next" | "on_success" | "on_error" | "loop_cycle" | "out" | "true" | "false" | "wait_done";
+
+export interface WorkflowPosition { x: number; y: number }
+export type AppExecutionMode = "main_desktop" | "virtual_desktop";
+export type WorkflowNodeData =
+  | { appContext?: string | null; appTitle?: string | null; command?: string | null; executionMode?: AppExecutionMode; focus?: boolean }
+  | { macroName: string; macroContext?: string | null; injectionMode: InjectionMode }
+  | { repetitions: number }
+  | { expression: string }
+  | { durationMs: number };
+export interface WorkflowNode { id: string; type: WorkflowNodeType; position: WorkflowPosition; data: WorkflowNodeData }
+export interface WorkflowEdge { id: string; sourceNodeId: string; sourceHandle: WorkflowHandle; targetNodeId: string; targetHandle: "in" }
+export interface WorkflowGraph { nodes: Record<string, WorkflowNode>; edges: WorkflowEdge[] }
+export interface WorkflowFile { version: number; name: string; graph: WorkflowGraph }
+export interface WorkflowSummary { name: string; nodes: number; edges: number }
+
 export type ServerMessage =
   | { type: "windows"; items: WindowInfo[] }
   | { type: "selected"; width: number; height: number }
@@ -60,6 +83,14 @@ export type ServerMessage =
   | { type: "macro_list"; items: MacroSummary[] }
   | { type: "macro_loaded"; macro_file: MacroFile }
   | { type: "macro_played"; name: string; steps: number }
+  | { type: "workflow_saved"; name: string; path: string }
+  | { type: "workflow_list"; items: WorkflowSummary[] }
+  | { type: "workflow_loaded"; workflow: WorkflowFile }
+  | { type: "workflow_started"; execution_id: string; name: string }
+  | { type: "workflow_node_started"; execution_id: string; node_id: string }
+  | { type: "workflow_node_finished"; execution_id: string; node_id: string; output: WorkflowHandle }
+  | { type: "workflow_finished"; execution_id: string; name: string; nodes_executed: number }
+  | { type: "workflow_failed"; execution_id: string; node_id?: string | null; message: string }
   | { type: "notice"; message: string }
   | { type: "error"; message: string }
   | { type: "webrtc_offer"; sdp: string }
