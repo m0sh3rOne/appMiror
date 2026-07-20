@@ -19,9 +19,10 @@ use crate::app::{AppState, AttachedWindow};
 use crate::protocol::{
     AttachArgs, CancelExecutionArgs, ExecuteWorkflowArgs, GetAppProfileArgs, GetExecutionStatusArgs,
     GetLayoutArgs, InjectAction, InjectArgs, LayoutFile, LayoutZoneKind, ListLayoutsArgs, McpError,
-    McpMethod, McpRequest, McpResponse, MouseButton, PlayMacroArgs, SaveMacroArgs, SaveWorkflowArgs,
-    SetAppProfileArgs,
+    McpMethod, McpRequest, McpResponse, MouseButton, PlayMacroArgs, ProbeCapabilitiesArgs, SaveMacroArgs,
+    SaveWorkflowArgs, SetAppProfileArgs,
 };
+use std::time::Duration;
 use crate::{capture, input, recorder};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -445,6 +446,18 @@ fn tool_definitions() -> Value {
                 "required": ["context"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "probe_app_capabilities",
+            "description": "Sonde de manière semi-automatique la capacité d'une application à recevoir des événements en arrière-plan et met à jour son profil.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "context": { "type": "string" },
+                    "window_id": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -487,6 +500,7 @@ async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> 
         "cancel_execution" => tool_cancel_execution(args, state).map(|t| json!([ { "type": "text", "text": t } ])),
         "set_app_profile" => tool_set_app_profile(args).await.map(|t| json!([ { "type": "text", "text": t } ])),
         "get_app_profile" => tool_get_app_profile(args, state).await.map(|v| json!([ { "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() } ])),
+        "probe_app_capabilities" => tool_probe_app_capabilities(args, state).await.map(|v| json!([ { "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() } ])),
         other => return Err(McpError { code: -32602, message: format!("outil inconnu: {other}") }),
     };
 
@@ -570,6 +584,47 @@ async fn tool_get_app_profile(args: Value, _state: &AppState) -> Result<Value, S
     let parsed: GetAppProfileArgs = serde_json::from_value(args).map_err(|e| format!("arguments invalides: {e}"))?;
     let profile = crate::profile_store::load_or_default(&parsed.context).await;
     Ok(serde_json::to_value(profile).unwrap_or_default())
+}
+
+async fn tool_probe_app_capabilities(args: Value, state: &AppState) -> Result<Value, String> {
+    let parsed: ProbeCapabilitiesArgs = serde_json::from_value(args).map_err(|e| format!("arguments invalides: {e}"))?;
+    let target = match parsed.window_id {
+        Some(id) => AttachedWindow { id, width: 800, height: 600 },
+        None => state.attached.lock().unwrap().ok_or_else(|| "aucune fenêtre ciblée; attachez une fenêtre ou spécifiez window_id".to_string())?,
+    };
+    let context = match parsed.context {
+        Some(c) => c,
+        None => attached_context(state)?,
+    };
+
+    let (_session, rx) = capture::start(target.id, 80, 1.0, false).map_err(|e| format!("impossible de démarrer la capture: {e}"))?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let frame_before = rx.borrow().clone();
+    let img_before = image::load_from_memory(&frame_before).ok();
+    let hash_before = img_before.as_ref().map(crate::detect::dhash8).unwrap_or(0);
+
+    let _ = crate::input::mouse_move_bg(target.id, 15, 15);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let frame_after = rx.borrow().clone();
+    let img_after = image::load_from_memory(&frame_after).ok();
+    let hash_after = img_after.as_ref().map(crate::detect::dhash8).unwrap_or(0);
+
+    let dist = (hash_before ^ hash_after).count_ones();
+    let bg_supported = dist > 0 || crate::input::is_foreground_window(target.id);
+    let bg_status = if bg_supported { "supported" } else { "partial" };
+
+    let mut profile = crate::profile_store::load_or_default(&context).await;
+    profile.background_mouse = bg_status.to_string();
+    let path = crate::profile_store::save(&profile).await?;
+
+    Ok(json!({
+        "context": context,
+        "windowId": target.id,
+        "dhashDistance": dist,
+        "backgroundMouse": bg_status,
+        "profilePath": path.to_string_lossy(),
+        "summary": format!("Sondage pour '{context}': backgroundMouse={bg_status} (dHash delta: {dist})")
+    }))
 }
 
 /// Contexte explicite ou déduit de la fenêtre attachée.

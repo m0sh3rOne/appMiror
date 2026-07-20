@@ -450,7 +450,9 @@ const stream = new StreamClient(canvas, {
         // L'overlay d'annotation, lui, est calé sur la frame (voir onFrameSize).
         input.setNativeSize(msg.width, msg.height);
         if (lastSelectedId !== null) {
-          macros.setTarget(lastSelectedId, windowContexts.get(lastSelectedId) ?? "unknown", msg.width, msg.height);
+          const ctx = windowContexts.get(lastSelectedId) ?? "unknown";
+          macros.setTarget(lastSelectedId, ctx, msg.width, msg.height);
+          stream.send({ type: "get_profile", context: ctx });
         }
         statusEl.textContent = `streaming ${msg.width}×${msg.height}`;
         setRecording(false); // toute nouvelle sélection arrête l'enregistrement
@@ -528,6 +530,23 @@ const stream = new StreamClient(canvas, {
         statusEl.textContent = `state ${msg.name} deleted`;
         layoutEditor.refreshStates();
         break;
+      case "profile_saved":
+        statusEl.textContent = `profil d'application sauvegardé pour ${msg.context}`;
+        break;
+      case "profile_loaded": {
+        const p = msg.profile;
+        const lbl = document.getElementById("profileContextLabel");
+        if (lbl) lbl.textContent = p.context;
+        const fg = document.getElementById("profileForegroundRequired") as HTMLInputElement | null;
+        if (fg) fg.checked = p.foregroundRequired;
+        const act = document.getElementById("profilePreferredActivation") as HTMLSelectElement | null;
+        if (act) act.value = p.preferredActivation;
+        const bm = document.getElementById("profileBackgroundMouse") as HTMLSelectElement | null;
+        if (bm) bm.value = p.backgroundMouse;
+        const bk = document.getElementById("profileBackgroundKeyboard") as HTMLSelectElement | null;
+        if (bk) bk.value = p.backgroundKeyboard;
+        break;
+      }
       case "notice":
         statusEl.textContent = `⚙️ ${msg.message}`;
         break;
@@ -826,4 +845,18 @@ btnLaunchVirtual.addEventListener("click", () => {
 
 btnSendActiveToVirtual.addEventListener("click", () => {
   stream.send({ type: "launch_active_on_virtual" });
+});
+
+document.getElementById("profileSaveBtn")?.addEventListener("click", () => {
+  const context = document.getElementById("profileContextLabel")?.textContent ?? "";
+  if (!context || context === "none") return;
+  const profile = {
+    context,
+    foregroundRequired: (document.getElementById("profileForegroundRequired") as HTMLInputElement).checked,
+    preferredActivation: (document.getElementById("profilePreferredActivation") as HTMLSelectElement).value,
+    backgroundMouse: (document.getElementById("profileBackgroundMouse") as HTMLSelectElement).value,
+    backgroundKeyboard: (document.getElementById("profileBackgroundKeyboard") as HTMLSelectElement).value,
+    pauseOnFocusLoss: false,
+  };
+  stream.send({ type: "save_profile", profile });
 });

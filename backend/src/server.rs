@@ -289,6 +289,17 @@ async fn handle_message(msg: ClientMessage, session: &mut Session, sender: &Send
             }
         }
 
+        ClientMessage::SaveProfile { profile } => {
+            let context = profile.context.clone();
+            match crate::profile_store::save(&profile).await {
+                Ok(_) => send_json(sender, &ServerMessage::ProfileSaved { context }).await,
+                Err(message) => send_json(sender, &ServerMessage::Error { message }).await,
+            }
+        }
+        ClientMessage::GetProfile { context } => {
+            let profile = crate::profile_store::load_or_default(&context).await;
+            send_json(sender, &ServerMessage::ProfileLoaded { profile }).await;
+        }
         ClientMessage::SaveMacro { context, name, window_id, params, steps } => {
             if session.hwnd != Some(window_id) {
                 send_json(sender, &ServerMessage::Error { message: "la fenêtre de la macro n'est plus la fenêtre active".into() }).await;

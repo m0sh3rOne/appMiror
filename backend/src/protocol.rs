@@ -80,6 +80,8 @@ pub enum ClientMessage {
     },
     ListStates { context: Option<String> },
     DeleteState { context: String, name: String },
+    SaveProfile { profile: AppProfile },
+    GetProfile { context: String },
     /// Sauvegarde la frame courante en JPEG dans `dir` (défaut si absent/vide).
     Screenshot { dir: Option<String> },
     /// Démarre l'enregistrement d'une séquence d'images dans un sous-dossier
@@ -145,6 +147,8 @@ pub enum ServerMessage {
     StateSaved { context: String, name: String, signatures: usize },
     StateList { items: Vec<UiStateSummary> },
     StateDeleted { context: String, name: String },
+    ProfileSaved { context: String },
+    ProfileLoaded { profile: AppProfile },
     /// Évènement informatif poussé au superviseur (ex. un agent MCP a pris la
     /// main sur une fenêtre).
     Notice { message: String },
@@ -566,7 +570,19 @@ pub struct NodeExecutionLog {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_attempted: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempts_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -831,4 +847,20 @@ pub struct SetAppProfileArgs {
 #[serde(rename_all = "camelCase")]
 pub struct GetAppProfileArgs {
     pub context: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct StepWorkflowArgs {
+    pub execution_id: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeCapabilitiesArgs {
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub window_id: Option<isize>,
 }

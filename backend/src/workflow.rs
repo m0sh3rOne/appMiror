@@ -258,15 +258,43 @@ pub async fn run_full(
             };
 
             let node_finish_ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+            let duration_ms = node_finish_ts.saturating_sub(node_start_ts);
+
+            let screenshot_b64 = if output == WorkflowHandle::OnError {
+                if let Some(target) = active_target {
+                    if let Ok((_sess, rx)) = capture::start(target.id, 80, 1.0, false) {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        let bytes = rx.borrow().clone();
+                        if !bytes.is_empty() {
+                            Some(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             if let Some(ref state) = app_state {
                 let log_entry = NodeExecutionLog {
                     node_id: current.clone(),
                     node_type: format!("{:?}", node.node_type).to_lowercase(),
                     started_at_ms: node_start_ts,
                     finished_at_ms: Some(node_finish_ts),
+                    duration_ms: Some(duration_ms),
                     output_handle: Some(format!("{:?}", output).to_lowercase()),
+                    action_attempted: Some(format!("{:?}", node.data)),
+                    state_before: None,
+                    state_after: None,
+                    attempts_count: Some(1),
+                    selection_reason: if force_foreground { Some("profile foreground_required=true => SendInput forced".into()) } else { None },
                     error_message: if output == WorkflowHandle::OnError { Some("étape échouée".into()) } else { None },
-                    screenshot_base64: None,
+                    screenshot_base64: screenshot_b64,
                 };
                 state.update_execution(&execution_id, |rec| {
                     rec.nodes_executed = executed;

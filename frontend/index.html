@@ -670,6 +670,38 @@
           </div>
         </div>
 
+        <div class="settings-section">
+          <div class="settings-title">App Capabilities Profile</div>
+          <div style="font-size: 0.8rem; color: #aaa;">Target Context: <strong id="profileContextLabel">none</strong></div>
+          <label class="opt" title="Force SendInput foreground focus for this application">
+            <input type="checkbox" id="profileForegroundRequired" /> Foreground focus required
+          </label>
+          <label class="settings-row"><span>Preferred Activation</span>
+            <select id="profilePreferredActivation">
+              <option value="auto">Auto (Click -> Click+Enter)</option>
+              <option value="click">Click</option>
+              <option value="keyboard">Keyboard (Click+Enter sequence)</option>
+            </select>
+          </label>
+          <label class="settings-row"><span>Background Mouse</span>
+            <select id="profileBackgroundMouse">
+              <option value="supported">Supported</option>
+              <option value="partial">Partial</option>
+              <option value="unsupported">Unsupported</option>
+            </select>
+          </label>
+          <label class="settings-row"><span>Background Keyboard</span>
+            <select id="profileBackgroundKeyboard">
+              <option value="supported">Supported</option>
+              <option value="partial">Partial</option>
+              <option value="unsupported">Unsupported</option>
+            </select>
+          </label>
+          <div class="settings-row-btns" style="margin-top: 0.4rem;">
+            <button id="profileSaveBtn">💾 Save App Profile</button>
+          </div>
+        </div>
+
         <div class="modal-actions">
           <button id="settingsClose">Close</button>
         </div>

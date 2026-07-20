@@ -27,6 +27,8 @@ export type ClientMessage =
   | { type: "capture_state"; context: string; name: string; layout?: string | null; zones: LayoutZone[] }
   | { type: "list_states"; context?: string | null }
   | { type: "delete_state"; context: string; name: string }
+  | { type: "save_profile"; profile: AppProfile }
+  | { type: "get_profile"; context: string }
   | { type: "screenshot"; dir?: string | null }
   | { type: "start_recording"; dir?: string | null; fps?: number | null }
   | { type: "stop_recording" }
@@ -137,7 +139,13 @@ export interface NodeExecutionLog {
   nodeType: string;
   startedAtMs: number;
   finishedAtMs?: number | null;
+  durationMs?: number | null;
   outputHandle?: string | null;
+  actionAttempted?: string | null;
+  stateBefore?: string | null;
+  stateAfter?: string | null;
+  attemptsCount?: number | null;
+  selectionReason?: string | null;
   errorMessage?: string | null;
   screenshotBase64?: string | null;
 }
@@ -187,6 +195,8 @@ export type ServerMessage =
   | { type: "state_saved"; context: string; name: string; signatures: number }
   | { type: "state_list"; items: UiStateSummary[] }
   | { type: "state_deleted"; context: string; name: string }
+  | { type: "profile_saved"; context: string }
+  | { type: "profile_loaded"; profile: AppProfile }
   | { type: "notice"; message: string }
   | { type: "error"; message: string }
   | { type: "webrtc_offer"; sdp: string }
