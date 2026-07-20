@@ -23,6 +23,12 @@ pub struct AttachedWindow {
 /// Le message porté est une charge JSON-RPC déjà sérialisée.
 pub type McpSessions = Arc<Mutex<HashMap<String, mpsc::Sender<String>>>>;
 
+use tokio::sync::watch;
+use crate::protocol::ExecutionRecord;
+
+pub type ExecutionHandle = (ExecutionRecord, watch::Sender<bool>);
+pub type ExecutionRegistry = Arc<Mutex<HashMap<String, ExecutionHandle>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     /// Fenêtre ciblée par l'agent MCP (None tant qu'aucun `attach_to_window`).
@@ -35,6 +41,8 @@ pub struct AppState {
     pub config: Arc<Mutex<Option<Arc<Mutex<crate::config::AppConfig>>>>>,
     /// Tampon de logs réseau affiché par la GUI.
     pub logs: crate::logbuf::LogBuffer,
+    /// Registre d'exécutions des workflows.
+    pub executions: ExecutionRegistry,
 }
 
 impl AppState {
@@ -47,6 +55,49 @@ impl AppState {
             mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(Mutex::new(None)),
             logs,
+            executions: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn record_execution(&self, record: ExecutionRecord, cancel_tx: watch::Sender<bool>) {
+        let mut map = self.executions.lock().unwrap();
+        if map.len() >= 50 {
+            let mut keys_to_remove: Vec<(String, u64)> = map
+                .iter()
+                .filter(|(_, (rec, _))| rec.status != crate::protocol::ExecutionStatus::Running)
+                .map(|(k, (rec, _))| (k.clone(), rec.started_at_ms))
+                .collect();
+            keys_to_remove.sort_by_key(|(_, ts)| *ts);
+            if let Some((oldest_key, _)) = keys_to_remove.first() {
+                let oldest_key = oldest_key.clone();
+                map.remove(&oldest_key);
+            }
+        }
+        map.insert(record.execution_id.clone(), (record, cancel_tx));
+    }
+
+    pub fn update_execution<F>(&self, id: &str, f: F)
+    where
+        F: FnOnce(&mut ExecutionRecord),
+    {
+        let mut map = self.executions.lock().unwrap();
+        if let Some((rec, _)) = map.get_mut(id) {
+            f(rec);
+        }
+    }
+
+    pub fn get_execution(&self, id: &str) -> Option<ExecutionRecord> {
+        let map = self.executions.lock().unwrap();
+        map.get(id).map(|(rec, _)| rec.clone())
+    }
+
+    pub fn cancel_execution(&self, id: &str) -> bool {
+        let map = self.executions.lock().unwrap();
+        if let Some((_, cancel_tx)) = map.get(id) {
+            let _ = cancel_tx.send(true);
+            true
+        } else {
+            false
         }
     }
 

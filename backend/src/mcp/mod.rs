@@ -17,9 +17,9 @@ use serde_json::{json, Value};
 
 use crate::app::{AppState, AttachedWindow};
 use crate::protocol::{
-    AttachArgs, InjectAction, InjectArgs, McpError, McpMethod, McpRequest, McpResponse, MouseButton,
-    ExecuteWorkflowArgs, GetLayoutArgs, LayoutFile, LayoutZoneKind, ListLayoutsArgs, PlayMacroArgs,
-    SaveMacroArgs, SaveWorkflowArgs,
+    AttachArgs, CancelExecutionArgs, ExecuteWorkflowArgs, GetExecutionStatusArgs, GetLayoutArgs,
+    InjectAction, InjectArgs, LayoutFile, LayoutZoneKind, ListLayoutsArgs, McpError, McpMethod,
+    McpRequest, McpResponse, MouseButton, PlayMacroArgs, SaveMacroArgs, SaveWorkflowArgs,
 };
 use crate::{capture, input, recorder};
 
@@ -387,11 +387,34 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "execute_workflow",
-            "description": "Exécute un workflow sauvegardé sur la fenêtre MCP attachée.",
+            "description": "Exécute un workflow sauvegardé sur la fenêtre MCP attachée. Passer observe=true pour lancer en tâche de fond et obtenir un execution_id immédiatement.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "name": { "type": "string" } },
+                "properties": {
+                    "name": { "type": "string" },
+                    "observe": { "type": "boolean", "description": "Lancer de façon asynchrone et obtenir l'execution_id pour suivi." }
+                },
                 "required": ["name"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "get_execution_status",
+            "description": "Rapporte le statut (running/finished/failed/cancelled), l'historique par nœud et les durées d'une exécution de workflow.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "execution_id": { "type": "string" } },
+                "required": ["execution_id"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "cancel_execution",
+            "description": "Demande l'annulation d'une exécution de workflow en cours.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "execution_id": { "type": "string" } },
+                "required": ["execution_id"],
                 "additionalProperties": false
             }
         }
@@ -432,6 +455,8 @@ async fn tools_call(params: Value, state: &AppState) -> Result<Value, McpError> 
         "save_workflow" => tool_save_workflow(args).await.map(|t| json!([ { "type": "text", "text": t } ])),
         "list_workflows" => tool_list_workflows().await.map(|t| json!([ { "type": "text", "text": t } ])),
         "execute_workflow" => tool_execute_workflow(args, state).await.map(|t| json!([ { "type": "text", "text": t } ])),
+        "get_execution_status" => tool_get_execution_status(args, state).map(|v| json!([ { "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() } ])),
+        "cancel_execution" => tool_cancel_execution(args, state).map(|t| json!([ { "type": "text", "text": t } ])),
         other => return Err(McpError { code: -32602, message: format!("outil inconnu: {other}") }),
     };
 
@@ -462,9 +487,41 @@ async fn tool_execute_workflow(args: Value, state: &AppState) -> Result<String, 
     let parsed: ExecuteWorkflowArgs = serde_json::from_value(args).map_err(|e| format!("arguments invalides: {e}"))?;
     let target = *state.attached.lock().unwrap();
     let file = crate::workflow_store::load(&parsed.name).await?;
-    let count = crate::workflow::run(file, target, None).await?;
-    let _ = state.notices.send(format!("MCP executed workflow '{}' ({count} nodes)", parsed.name));
-    Ok(format!("workflow '{}' exécuté: {count} nœuds", parsed.name))
+    let execution_id = uuid::Uuid::new_v4().to_string();
+
+    if parsed.observe {
+        let state_clone = state.clone();
+        let name = parsed.name.clone();
+        let exec_id = execution_id.clone();
+        tokio::spawn(async move {
+            let _ = crate::workflow::run_full(file, target, None, Some(state_clone), None, Some(exec_id)).await;
+        });
+        let _ = state.notices.send(format!("MCP launched workflow '{name}' asynchronously ({execution_id})"));
+        Ok(json!({
+            "executionId": execution_id,
+            "status": "running",
+            "workflowName": parsed.name,
+        }).to_string())
+    } else {
+        let count = crate::workflow::run_full(file, target, None, Some(state.clone()), None, Some(execution_id)).await?;
+        let _ = state.notices.send(format!("MCP executed workflow '{}' ({count} nodes)", parsed.name));
+        Ok(format!("workflow '{}' exécuté: {count} nœuds", parsed.name))
+    }
+}
+
+fn tool_get_execution_status(args: Value, state: &AppState) -> Result<Value, String> {
+    let parsed: GetExecutionStatusArgs = serde_json::from_value(args).map_err(|e| format!("arguments invalides: {e}"))?;
+    let record = state.get_execution(&parsed.execution_id).ok_or_else(|| format!("exécution '{}' introuvable", parsed.execution_id))?;
+    Ok(serde_json::to_value(record).unwrap_or_default())
+}
+
+fn tool_cancel_execution(args: Value, state: &AppState) -> Result<String, String> {
+    let parsed: CancelExecutionArgs = serde_json::from_value(args).map_err(|e| format!("arguments invalides: {e}"))?;
+    if state.cancel_execution(&parsed.execution_id) {
+        Ok(format!("annulation demandée pour l'exécution '{}'", parsed.execution_id))
+    } else {
+        Err(format!("exécution '{}' introuvable", parsed.execution_id))
+    }
 }
 
 /// Contexte explicite ou déduit de la fenêtre attachée.

@@ -24,7 +24,9 @@ fn allowed_handle(kind: WorkflowNodeType, handle: WorkflowHandle) -> bool {
         | (WorkflowNodeType::Macro, WorkflowHandle::OnSuccess | WorkflowHandle::OnError)
         | (WorkflowNodeType::Loop, WorkflowHandle::LoopCycle | WorkflowHandle::Out)
         | (WorkflowNodeType::Condition, WorkflowHandle::True | WorkflowHandle::False)
-        | (WorkflowNodeType::Wait, WorkflowHandle::WaitDone))
+        | (WorkflowNodeType::Wait, WorkflowHandle::WaitDone)
+        | (WorkflowNodeType::Activate, WorkflowHandle::OnSuccess | WorkflowHandle::OnError)
+        | (WorkflowNodeType::WaitForState, WorkflowHandle::OnSuccess | WorkflowHandle::OnError))
 }
 
 fn data_matches(node: &WorkflowNode) -> bool {
@@ -33,7 +35,9 @@ fn data_matches(node: &WorkflowNode) -> bool {
         | (WorkflowNodeType::Macro, WorkflowNodeData::Macro(_))
         | (WorkflowNodeType::Loop, WorkflowNodeData::Loop(_))
         | (WorkflowNodeType::Condition, WorkflowNodeData::Condition(_))
-        | (WorkflowNodeType::Wait, WorkflowNodeData::Wait(_)))
+        | (WorkflowNodeType::Wait, WorkflowNodeData::Wait(_))
+        | (WorkflowNodeType::Activate, WorkflowNodeData::Activate(_))
+        | (WorkflowNodeType::WaitForState, WorkflowNodeData::WaitForState(_)))
 }
 
 pub fn validate(graph: &WorkflowGraph) -> Result<(), String> {
@@ -50,6 +54,15 @@ pub fn validate(graph: &WorkflowGraph) -> Result<(), String> {
             WorkflowNodeData::Loop(d) if d.repetitions == 0 || d.repetitions > 10_000 => return Err(format!("répétitions invalides: {}", node.id)),
             WorkflowNodeData::Condition(d) if d.expression.trim().is_empty() => return Err(format!("condition vide: {}", node.id)),
             WorkflowNodeData::Wait(d) if d.duration_ms > 3_600_000 => return Err(format!("attente trop longue: {}", node.id)),
+            WorkflowNodeData::Activate(d) => {
+                if d.element.trim().is_empty() { return Err(format!("élément à activer absent: {}", node.id)); }
+                if d.retries > 10 { return Err(format!("tentatives (retries) > 10: {}", node.id)); }
+                if d.timeout_ms > 300_000 { return Err(format!("timeout > 300 000 ms: {}", node.id)); }
+            }
+            WorkflowNodeData::WaitForState(d) => {
+                if d.state.trim().is_empty() { return Err(format!("nom d'état absent: {}", node.id)); }
+                if d.timeout_ms > 300_000 { return Err(format!("timeout > 300 000 ms: {}", node.id)); }
+            }
             _ => {}
         }
     }

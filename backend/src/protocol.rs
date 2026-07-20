@@ -420,7 +420,7 @@ pub struct WorkflowNode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowNodeType { Start, Macro, Loop, Condition, Wait }
+pub enum WorkflowNodeType { Start, Macro, Loop, Condition, Wait, Activate, WaitForState }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct WorkflowPosition { pub x: f64, pub y: f64 }
@@ -433,6 +433,8 @@ pub enum WorkflowNodeData {
     Loop(LoopNodeData),
     Condition(ConditionNodeData),
     Wait(WaitNodeData),
+    Activate(ActivateNodeData),
+    WaitForState(WaitForStateNodeData),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -468,6 +470,44 @@ pub struct MacroNodeData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub macro_context: Option<String>,
     pub injection_mode: InjectionMode,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub parameters: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub verify: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActivateNodeData {
+    pub element: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_state: Option<String>,
+    #[serde(default = "default_true")]
+    pub verify: bool,
+    #[serde(default = "default_5000")]
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub retries: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WaitForStateNodeData {
+    pub state: String,
+    #[serde(default = "default_5000")]
+    pub timeout_ms: u64,
+}
+
+fn default_5000() -> u64 {
+    5000
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -507,6 +547,48 @@ pub enum WorkflowInputHandle { In }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowSummary { pub name: String, pub nodes: usize, pub edges: usize }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionStatus {
+    Running,
+    Finished,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeExecutionLog {
+    pub node_id: String,
+    pub node_type: String,
+    pub started_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshot_base64: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionRecord {
+    pub execution_id: String,
+    pub workflow_name: String,
+    pub status: ExecutionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_node_id: Option<String>,
+    pub started_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<u64>,
+    pub nodes_executed: usize,
+    pub history: Vec<NodeExecutionLog>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+}
 
 // ============================================================================
 // MCP (Model Context Protocol) — enveloppe JSON-RPC 2.0.
@@ -664,7 +746,26 @@ pub struct PlayMacroArgs {
 pub struct SaveWorkflowArgs { pub name: String, pub graph: WorkflowGraph }
 
 #[derive(Debug, Deserialize)]
-pub struct ExecuteWorkflowArgs { pub name: String }
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteWorkflowArgs {
+    pub name: String,
+    #[serde(default)]
+    pub observe: bool,
+    #[serde(default)]
+    pub parameters: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetExecutionStatusArgs {
+    pub execution_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelExecutionArgs {
+    pub execution_id: String,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

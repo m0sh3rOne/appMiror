@@ -109,7 +109,7 @@ export interface LayoutFile {
 export interface LayoutSummary { context: string; name: string; zones: number }
 export interface UiStateSummary { context: string; name: string; layout?: string | null; signatures: number }
 
-export type WorkflowNodeType = "start" | "macro" | "loop" | "condition" | "wait";
+export type WorkflowNodeType = "start" | "macro" | "loop" | "condition" | "wait" | "activate" | "wait_for_state";
 export type InjectionMode = "foreground" | "background";
 export type WorkflowHandle = "next" | "on_success" | "on_error" | "loop_cycle" | "out" | "true" | "false" | "wait_done";
 
@@ -118,15 +118,41 @@ export type AppExecutionMode = "main_desktop" | "virtual_desktop";
 export type StartTargetKind = "window" | "command" | "main_desktop" | "virtual_desktop";
 export type WorkflowNodeData =
   | { targetKind?: StartTargetKind | null; appContext?: string | null; appTitle?: string | null; command?: string | null; executionMode?: AppExecutionMode; focus?: boolean }
-  | { macroName: string; macroContext?: string | null; injectionMode: InjectionMode }
+  | { macroName: string; macroContext?: string | null; injectionMode: InjectionMode; parameters?: Record<string, string>; verify?: boolean }
   | { repetitions: number }
   | { expression: string }
-  | { durationMs: number };
+  | { durationMs: number }
+  | { element: string; layout?: string | null; strategy?: string | null; expectedState?: string | null; timeoutMs?: number; retries?: number }
+  | { state: string; timeoutMs?: number };
 export interface WorkflowNode { id: string; type: WorkflowNodeType; position: WorkflowPosition; data: WorkflowNodeData }
 export interface WorkflowEdge { id: string; sourceNodeId: string; sourceHandle: WorkflowHandle; targetNodeId: string; targetHandle: "in" }
 export interface WorkflowGraph { nodes: Record<string, WorkflowNode>; edges: WorkflowEdge[] }
 export interface WorkflowFile { version: number; name: string; graph: WorkflowGraph }
 export interface WorkflowSummary { name: string; nodes: number; edges: number }
+
+export type ExecutionStatus = "running" | "finished" | "failed" | "cancelled";
+
+export interface NodeExecutionLog {
+  nodeId: string;
+  nodeType: string;
+  startedAtMs: number;
+  finishedAtMs?: number | null;
+  outputHandle?: string | null;
+  errorMessage?: string | null;
+  screenshotBase64?: string | null;
+}
+
+export interface ExecutionRecord {
+  executionId: string;
+  workflowName: string;
+  status: ExecutionStatus;
+  currentNodeId?: string | null;
+  startedAtMs: number;
+  finishedAtMs?: number | null;
+  nodesExecuted: number;
+  history: NodeExecutionLog[];
+  errorMessage?: string | null;
+}
 
 export type ServerMessage =
   | { type: "windows"; items: WindowInfo[] }

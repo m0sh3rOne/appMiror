@@ -22,13 +22,46 @@ fn emit(tx: &Option<mpsc::UnboundedSender<WorkflowEvent>>, event: WorkflowEvent)
     if let Some(tx) = tx { let _ = tx.send(event); }
 }
 
-fn condition(expression: &str, last_success: bool) -> Result<bool, String> {
-    match expression.trim().to_ascii_lowercase().as_str() {
+fn resolve_window_context(window_id: isize) -> String {
+    capture::list_windows(&[], true)
+        .ok()
+        .and_then(|wins| wins.into_iter().find(|w| w.id == window_id))
+        .map(|w| w.context)
+        .unwrap_or_default()
+}
+
+async fn eval_condition(expression: &str, last_success: bool, target: Option<&AttachedWindow>) -> Result<bool, String> {
+    let trimmed = expression.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    match lower.as_str() {
         "true" | "always" => Ok(true),
         "false" | "never" => Ok(false),
         "last_result == \"success\"" | "last_result == 'success'" => Ok(last_success),
         "last_result == \"error\"" | "last_result == 'error'" => Ok(!last_success),
-        other => Err(format!("condition non supportée: {other}")),
+        _ => {
+            if lower.starts_with("state ==") || lower.starts_with("state !=") {
+                let is_eq = lower.starts_with("state ==");
+                let expected_part = if is_eq { &trimmed[8..] } else { &trimmed[8..] }.trim();
+                let expected_name = expected_part.trim_matches(|c| c == '"' || c == '\'');
+                let Some(target) = target else { return Err("condition d'état sans fenêtre cible active".into()); };
+                let context = resolve_window_context(target.id);
+                let states = crate::state_store::load_context(&context).await.unwrap_or_default();
+                let (session, rx) = crate::capture::start(target.id, 80, 1.0, false)
+                    .map_err(|e| format!("capture de vérification pour condition: {e}"))?;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let frame = rx.borrow().clone();
+                let _ = session.stop();
+                let detected_state = if !frame.is_empty() {
+                    crate::detect::detect(&frame, &states).ok().and_then(|(b, _)| b).map(|s| s.name)
+                } else {
+                    None
+                };
+                let matched = detected_state.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(expected_name));
+                Ok(if is_eq { matched } else { !matched })
+            } else {
+                Err(format!("condition non supportée: {trimmed}"))
+            }
+        }
     }
 }
 
@@ -41,8 +74,42 @@ pub async fn run(
     fallback_target: Option<AttachedWindow>,
     events: Option<mpsc::UnboundedSender<WorkflowEvent>>,
 ) -> Result<usize, String> {
+    run_full(file, fallback_target, events, None, None, None).await
+}
+
+pub async fn run_full(
+    file: WorkflowFile,
+    fallback_target: Option<AttachedWindow>,
+    events: Option<mpsc::UnboundedSender<WorkflowEvent>>,
+    app_state: Option<crate::app::AppState>,
+    cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    execution_id_opt: Option<String>,
+) -> Result<usize, String> {
     crate::workflow_store::validate(&file.graph)?;
-    let execution_id = uuid::Uuid::new_v4().to_string();
+    let execution_id = execution_id_opt.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let (internal_cancel_tx, internal_cancel_rx) = tokio::sync::watch::channel(false);
+    let cancel_rx = cancel_rx.unwrap_or(internal_cancel_rx);
+
+    let start_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    if let Some(ref state) = app_state {
+        let record = ExecutionRecord {
+            execution_id: execution_id.clone(),
+            workflow_name: file.name.clone(),
+            status: ExecutionStatus::Running,
+            current_node_id: None,
+            started_at_ms: start_ts,
+            finished_at_ms: None,
+            nodes_executed: 0,
+            history: Vec::new(),
+            error_message: None,
+        };
+        state.record_execution(record, internal_cancel_tx);
+    }
+
     emit(&events, WorkflowEvent::Started { execution_id: execution_id.clone(), name: file.name.clone() });
     let start = file.graph.nodes.values().find(|n| n.node_type == WorkflowNodeType::Start).unwrap().id.clone();
     let mut current = start;
@@ -50,17 +117,34 @@ pub async fn run(
     let mut last_success = true;
     let mut executed = 0usize;
     let mut active_target = fallback_target;
-    // Le checkbox Focus du START signifie que les macros doivent utiliser de
-    // vrais SendInput. C'est indispensable pour les applications WinUI/UWP
-    // (dont le Bloc-notes moderne), qui ignorent les messages PostMessage.
     let mut force_foreground = false;
 
     let result: Result<usize, (Option<String>, String)> = async {
         loop {
+            if *cancel_rx.borrow() {
+                if let Some(ref state) = app_state {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                    state.update_execution(&execution_id, |rec| {
+                        rec.status = ExecutionStatus::Cancelled;
+                        rec.finished_at_ms = Some(now);
+                        rec.error_message = Some("workflow annulé".into());
+                    });
+                }
+                return Err((Some(current.clone()), "workflow annulé".into()));
+            }
             if executed >= 10_000 { return Err((Some(current.clone()), "limite de 10 000 transitions atteinte".into())); }
             let node = file.graph.nodes.get(&current).ok_or_else(|| (Some(current.clone()), "nœud introuvable".into()))?;
+
+            if let Some(ref state) = app_state {
+                state.update_execution(&execution_id, |rec| {
+                    rec.current_node_id = Some(current.clone());
+                });
+            }
+
             emit(&events, WorkflowEvent::NodeStarted { execution_id: execution_id.clone(), node_id: current.clone() });
             executed += 1;
+            let node_start_ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
             let output = match &node.data {
                 WorkflowNodeData::Start(data) => {
                     active_target = Some(resolve_start_target(data, active_target).await.map_err(|e| (Some(node.id.clone()), e))?);
@@ -81,11 +165,74 @@ pub async fn run(
                         tokio::time::sleep(Duration::from_millis(180)).await;
                     }
                     match macro_file {
-                        Ok(m) => match crate::macro_player::play_with_mode(&m, target, injection_mode).await {
+                        Ok(m) => match crate::macro_player::play_full(&m, target, injection_mode, &data.parameters, 0).await {
                             Ok(_) => { last_success = true; WorkflowHandle::OnSuccess }
                             Err(e) => { tracing::warn!("macro {} échouée: {e}", data.macro_name); last_success = false; WorkflowHandle::OnError }
                         },
                         Err(e) => { tracing::warn!("macro {} indisponible: {e}", data.macro_name); last_success = false; WorkflowHandle::OnError }
+                    }
+                }
+                WorkflowNodeData::Activate(data) => {
+                    let target = active_target.ok_or_else(|| (Some(node.id.clone()), "aucune application cible; configurez le nœud START".into()))?;
+                    let context = resolve_window_context(target.id);
+                    let layouts = crate::layout_store::load_context(&context).await.unwrap_or_default();
+                    let states = crate::state_store::load_context(&context).await.unwrap_or_default();
+                    let strategy = crate::activate::Strategy::parse(data.strategy.as_deref())
+                        .map_err(|e| (Some(node.id.clone()), e))?;
+                    let retries = data.retries.min(10);
+                    let mut success = false;
+                    for attempt in 0..=retries {
+                        if *cancel_rx.borrow() { break; }
+                        if attempt > 0 {
+                            let delay = Duration::from_millis(300 + u64::from(attempt) * 200);
+                            tokio::time::sleep(delay).await;
+                        }
+                        match crate::activate::activate_element(
+                            target,
+                            &layouts,
+                            &states,
+                            data.layout.as_deref(),
+                            &data.element,
+                            strategy,
+                            data.verify,
+                            None,
+                        ).await {
+                            Ok(_) => {
+                                success = true;
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::warn!("activate {} échoué (tentative {}/{}): {e}", data.element, attempt + 1, retries + 1);
+                            }
+                        }
+                    }
+                    if success {
+                        last_success = true;
+                        WorkflowHandle::OnSuccess
+                    } else {
+                        last_success = false;
+                        WorkflowHandle::OnError
+                    }
+                }
+                WorkflowNodeData::WaitForState(data) => {
+                    let target = active_target.ok_or_else(|| (Some(node.id.clone()), "aucune application cible; configurez le nœud START".into()))?;
+                    let context = resolve_window_context(target.id);
+                    let states = crate::state_store::load_context(&context).await.unwrap_or_default();
+                    match crate::detect::wait_for_state_on_window(
+                        target.id,
+                        &states,
+                        &data.state,
+                        data.timeout_ms,
+                    ).await {
+                        Ok(_) => {
+                            last_success = true;
+                            WorkflowHandle::OnSuccess
+                        }
+                        Err(e) => {
+                            tracing::warn!("wait_for_state {} échoué: {e}", data.state);
+                            last_success = false;
+                            WorkflowHandle::OnError
+                        }
                     }
                 }
                 WorkflowNodeData::Loop(data) => {
@@ -94,29 +241,68 @@ pub async fn run(
                     else { loops.remove(&node.id); WorkflowHandle::Out }
                 }
                 WorkflowNodeData::Condition(data) => {
-                    if condition(&data.expression, last_success).map_err(|e| (Some(node.id.clone()), e))? { WorkflowHandle::True } else { WorkflowHandle::False }
+                    if eval_condition(&data.expression, last_success, active_target.as_ref()).await.map_err(|e| (Some(node.id.clone()), e))? {
+                        WorkflowHandle::True
+                    } else {
+                        WorkflowHandle::False
+                    }
                 }
                 WorkflowNodeData::Wait(data) => {
                     tokio::time::sleep(Duration::from_millis(data.duration_ms)).await;
                     WorkflowHandle::WaitDone
                 }
             };
+
+            let node_finish_ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+            if let Some(ref state) = app_state {
+                let log_entry = NodeExecutionLog {
+                    node_id: current.clone(),
+                    node_type: format!("{:?}", node.node_type).to_lowercase(),
+                    started_at_ms: node_start_ts,
+                    finished_at_ms: Some(node_finish_ts),
+                    output_handle: Some(format!("{:?}", output).to_lowercase()),
+                    error_message: if output == WorkflowHandle::OnError { Some("étape échouée".into()) } else { None },
+                    screenshot_base64: None,
+                };
+                state.update_execution(&execution_id, |rec| {
+                    rec.nodes_executed = executed;
+                    rec.history.push(log_entry);
+                });
+            }
+
             emit(&events, WorkflowEvent::NodeFinished { execution_id: execution_id.clone(), node_id: node.id.clone(), output });
             tokio::time::sleep(Duration::from_millis(50)).await;
             let Some(next) = next_node(&file.graph, &node.id, output) else {
-                if output == WorkflowHandle::OnError { return Err((Some(node.id.clone()), "macro échouée sans branche on_error".into())); }
+                if output == WorkflowHandle::OnError { return Err((Some(node.id.clone()), "étape échouée sans branche on_error".into())); }
                 return Ok(executed);
             };
             current = next;
         }
     }.await;
 
+    let finish_ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
     match result {
         Ok(count) => {
+            if let Some(ref state) = app_state {
+                state.update_execution(&execution_id, |rec| {
+                    rec.status = ExecutionStatus::Finished;
+                    rec.current_node_id = None;
+                    rec.finished_at_ms = Some(finish_ts);
+                });
+            }
             emit(&events, WorkflowEvent::Finished { execution_id, name: file.name, nodes_executed: count });
             Ok(count)
         }
         Err((node_id, message)) => {
+            if let Some(ref state) = app_state {
+                state.update_execution(&execution_id, |rec| {
+                    if rec.status != ExecutionStatus::Cancelled {
+                        rec.status = ExecutionStatus::Failed;
+                    }
+                    rec.finished_at_ms = Some(finish_ts);
+                    rec.error_message = Some(message.clone());
+                });
+            }
             emit(&events, WorkflowEvent::Failed { execution_id, node_id, message: message.clone() });
             Err(message)
         }

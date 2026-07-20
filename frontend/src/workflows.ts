@@ -10,8 +10,18 @@ const OUTPUTS: Record<WorkflowNodeType, Array<{ handle: WorkflowHandle; label: s
   loop: [{ handle: "loop_cycle", label: "cycle" }, { handle: "out", label: "out" }],
   condition: [{ handle: "true", label: "true" }, { handle: "false", label: "false" }],
   wait: [{ handle: "wait_done", label: "done" }],
+  activate: [{ handle: "on_success", label: "success" }, { handle: "on_error", label: "error" }],
+  wait_for_state: [{ handle: "on_success", label: "success" }, { handle: "on_error", label: "error" }],
 };
-const TITLES: Record<WorkflowNodeType, string> = { start: "START", macro: "MACRO", loop: "LOOP", condition: "IF CONDITION", wait: "WAIT" };
+const TITLES: Record<WorkflowNodeType, string> = {
+  start: "START",
+  macro: "MACRO",
+  loop: "LOOP",
+  condition: "IF CONDITION",
+  wait: "WAIT",
+  activate: "ACTIVATE ELEMENT",
+  wait_for_state: "WAIT FOR STATE",
+};
 
 type Point = { x: number; y: number };
 type Rect = { nodeId: string; left: number; top: number; right: number; bottom: number };
@@ -147,7 +157,9 @@ export class WorkflowEditor {
   private makeNode(type: WorkflowNodeType, x: number, y: number): WorkflowNode {
     const id = `${type}-${Date.now().toString(36)}-${this.sequence++}`;
     let data: WorkflowNodeData;
-    if (type === "macro") data = { macroName: this.macros[0]?.name ?? "", macroContext: this.macros[0]?.context ?? null, injectionMode: "background" };
+    if (type === "macro") data = { macroName: this.macros[0]?.name ?? "", macroContext: this.macros[0]?.context ?? null, injectionMode: "background", parameters: {}, verify: false };
+    else if (type === "activate") data = { element: "", layout: null, strategy: "auto", expectedState: null, timeoutMs: 5000, retries: 0 };
+    else if (type === "wait_for_state") data = { state: "", timeoutMs: 5000 };
     else if (type === "loop") data = { repetitions: 2 };
     else if (type === "condition") data = { expression: "last_result == \"success\"" };
     else if (type === "wait") data = { durationMs: 500 };
@@ -172,9 +184,6 @@ export class WorkflowEditor {
 
   private nodeElement(node: WorkflowNode): HTMLElement {
     const el = document.createElement("article"); el.className = `wf-node wf-${node.type}`; el.dataset.nodeId = node.id;
-    // La position persistée est exprimée dans le repère monde. Elle doit être
-    // appliquée dès la création du DOM ; sinon toutes les cartes restent à
-    // (0,0) alors que les arêtes et la mini-carte utilisent node.position.
     el.style.left = `${node.position.x}px`;
     el.style.top = `${node.position.y}px`;
     if (this.selectedNode === node.id) el.classList.add("selected");
@@ -241,8 +250,24 @@ export class WorkflowEditor {
       const focus = document.createElement("input"); focus.type = "checkbox"; focus.checked = data.focus ?? false; focus.onchange = () => data.focus = focus.checked;
       const focusLabel = document.createElement("label"); focusLabel.className = "wf-check"; focusLabel.append(focus, " Focus target and use foreground input");
       body.append(this.field("Target", app), this.field("Launch command", command), this.field("Launch location", mode), focusLabel);
+    } else if (node.type === "activate") {
+      const data = node.data as { element: string; layout?: string | null; strategy?: string | null; expectedState?: string | null; timeoutMs?: number; retries?: number };
+      const elInput = document.createElement("input"); elInput.type = "text"; elInput.placeholder = "e.g. new_game or button_id"; elInput.value = data.element ?? ""; elInput.oninput = () => data.element = elInput.value;
+      const layoutInput = document.createElement("input"); layoutInput.type = "text"; layoutInput.placeholder = "e.g. main_menu (optional)"; layoutInput.value = data.layout ?? ""; layoutInput.oninput = () => data.layout = layoutInput.value || null;
+      const stratSel = document.createElement("select");
+      stratSel.append(new Option("Auto", "auto"), new Option("Click", "click"), new Option("Click then Enter", "click_then_enter"), new Option("Double click", "double_click"));
+      stratSel.value = data.strategy ?? "auto"; stratSel.onchange = () => data.strategy = stratSel.value;
+      const stateInput = document.createElement("input"); stateInput.type = "text"; stateInput.placeholder = "e.g. gameplay (optional)"; stateInput.value = data.expectedState ?? ""; stateInput.oninput = () => data.expectedState = stateInput.value || null;
+      const retriesInput = document.createElement("input"); retriesInput.type = "number"; retriesInput.min = "0"; retriesInput.max = "10"; retriesInput.value = String(data.retries ?? 0); retriesInput.oninput = () => data.retries = Number(retriesInput.value);
+      const timeoutInput = document.createElement("input"); timeoutInput.type = "number"; timeoutInput.min = "100"; timeoutInput.max = "300000"; timeoutInput.value = String(data.timeoutMs ?? 5000); timeoutInput.oninput = () => data.timeoutMs = Number(timeoutInput.value);
+      body.append(this.field("Element", elInput), this.field("Layout", layoutInput), this.field("Strategy", stratSel), this.field("Expected state", stateInput), this.field("Retries", retriesInput), this.field("Timeout ms", timeoutInput));
+    } else if (node.type === "wait_for_state") {
+      const data = node.data as { state: string; timeoutMs?: number };
+      const stateInput = document.createElement("input"); stateInput.type = "text"; stateInput.placeholder = "e.g. main_menu or gameplay"; stateInput.value = data.state ?? ""; stateInput.oninput = () => data.state = stateInput.value;
+      const timeoutInput = document.createElement("input"); timeoutInput.type = "number"; timeoutInput.min = "100"; timeoutInput.max = "300000"; timeoutInput.value = String(data.timeoutMs ?? 5000); timeoutInput.oninput = () => data.timeoutMs = Number(timeoutInput.value);
+      body.append(this.field("State", stateInput), this.field("Timeout ms", timeoutInput));
     } else if (node.type === "macro") {
-      const data = node.data as { macroName: string; macroContext?: string | null; injectionMode: "foreground" | "background" };
+      const data = node.data as { macroName: string; macroContext?: string | null; injectionMode: "foreground" | "background"; parameters?: Record<string, string>; verify?: boolean };
       const macro = document.createElement("select");
       macro.append(new Option("— choisir une macro —", ""));
       for (const item of this.macros) { const o = new Option(`[${item.context}] ${item.name}`, `${item.context}::${item.name}`); o.dataset.context = item.context; o.dataset.name = item.name; macro.add(o); }
@@ -251,7 +276,11 @@ export class WorkflowEditor {
       const mode = document.createElement("select");
       mode.append(new Option("Background", "background"), new Option("Foreground", "foreground"));
       mode.value = data.injectionMode; mode.onchange = () => data.injectionMode = mode.value as "foreground" | "background";
-      body.append(this.field("Macro", macro), this.field("Injection", mode));
+      const paramsInput = document.createElement("input"); paramsInput.type = "text"; paramsInput.placeholder = '{"param":"val"}'; paramsInput.value = JSON.stringify(data.parameters ?? {});
+      paramsInput.oninput = () => { try { data.parameters = JSON.parse(paramsInput.value); } catch { /* ignore invalid json while typing */ } };
+      const verifyCheck = document.createElement("input"); verifyCheck.type = "checkbox"; verifyCheck.checked = data.verify ?? false; verifyCheck.onchange = () => data.verify = verifyCheck.checked;
+      const verifyLabel = document.createElement("label"); verifyLabel.className = "wf-check"; verifyLabel.append(verifyCheck, " Verify screen change");
+      body.append(this.field("Macro", macro), this.field("Injection", mode), this.field("Parameters (JSON)", paramsInput), verifyLabel);
     } else if (node.type === "loop") {
       const data = node.data as { repetitions: number }; const input = document.createElement("input"); input.type = "number"; input.min = "1"; input.max = "10000"; input.value = String(data.repetitions); input.oninput = () => data.repetitions = Number(input.value); body.append(this.field("Repetitions", input));
     } else if (node.type === "condition") {
